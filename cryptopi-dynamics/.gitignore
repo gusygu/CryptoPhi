@@ -1,9 +1,0 @@
-node_modules/
-.env
-.env.dev
-.env.neon
-.DS_Store
-dist/
-build/
-*.log
-*legacy/
