@@ -9,6 +9,7 @@ import {
   type MatrixGridObject,
 } from "../db/db";
 import { persistWalletSnapshot } from "../features/wallet/persist";
+import { getAppSessionId } from "../system/appSession";
 
 /** Load matrices bases/quote from env -> DB coin_universe -> fallback */
 async function loadMatricesConfig() {
@@ -187,7 +188,7 @@ export async function runMatricesCycle(
     const appSessionId =
       tick.appSessionId ??
       process.env.MATRIX_APP_SESSION ??
-      "matrices-pipeline";
+      getAppSessionId();
 
     await persistLiveMatricesSlice({
       appSessionId,

@@ -224,7 +224,7 @@ SELECT
     ELSE 'red'
   END AS severity_level,
 
-  /* alignment score 0–100 */
+  /* alignment score 0-100 */
   GREATEST(
     0,
     LEAST(
@@ -259,28 +259,3 @@ FROM base;
 ALTER TABLE cin_aux.rt_session
   ADD COLUMN IF NOT EXISTS closed_at timestamptz,
   ADD COLUMN IF NOT EXISTS is_closed boolean NOT NULL DEFAULT false;
-
-------------------------------------------------------------
--- 7) Raw account trades table (+ idempotent index)
-------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS market.account_trades (
-  symbol           text        NOT NULL,
-  trade_id         bigint      NOT NULL,
-  order_id         bigint,
-  price            numeric     NOT NULL,
-  qty              numeric     NOT NULL,
-  quote_qty        numeric     NOT NULL,
-  commission       numeric,
-  commission_asset text,
-  trade_time       timestamptz NOT NULL,
-  is_buyer         boolean,
-  is_maker         boolean,
-  is_best_match    boolean,
-  raw              jsonb       NOT NULL,
-  PRIMARY KEY (symbol, trade_id)
-);
-
-CREATE INDEX IF NOT EXISTS account_trades_symbol_time_idx
-  ON market.account_trades (symbol, trade_time);
-

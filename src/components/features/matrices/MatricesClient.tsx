@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import MatricesTable, { type ApiMatrixRow as TableMatrixRow } from "./MatricesTable";
-import LegacyMatrices from "legacy/lab/legacy/Matrices";
+import { MatrixGridTable, type ApiMatrixRow as TableMatrixRow } from "./MatricesTable";
 import MooAuxCard from "@/components/features/moo-aux/MooAuxCard";
 import { colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
 import { useSettings } from "@/lib/settings/client";
@@ -48,40 +47,17 @@ type MatricesLatestResponse = {
 
 type UiMatrixRow = TableMatrixRow;
 
-const DEFAULT_POLL_INTERVAL_MS = 40_000;
-const FROZEN_EPSILON = 1e-8;
-const STREAK_MID_THRESHOLD = 3;
-const STREAK_LONG_THRESHOLD = 6;
+const DEFAULT_POLL_INTERVAL_MS = 80_000;
+const FREEZE_DELTA_EPS = 1e-12;
+const ZERO_FLOOR_DECIMAL = 1e-7;
+const ZERO_FLOOR_PERCENT = 0.0005;
 const WINDOW_TO_MS: Record<"15m" | "30m" | "1h", number> = {
   "15m": 15 * 60 * 1000,
   "30m": 30 * 60 * 1000,
   "1h": 60 * 60 * 1000,
 };
 
-const pairKey = (base: string, quote: string) => `${base}|${quote}`;
-
-const streakToStage = (streak: number): FrozenStage | null => {
-  if (!Number.isFinite(streak) || streak <= 0) return null;
-  if (streak > STREAK_LONG_THRESHOLD) return "long";
-  if (streak >= STREAK_MID_THRESHOLD) return "mid";
-  return "recent";
-};
-
 const normalizeKey = (value: string) => String(value ?? "").toUpperCase();
-
-const isSymbolFrozen = (
-  flags: Record<string, boolean>,
-  base: string,
-  quote: string
-): boolean => {
-  const baseKey = normalizeKey(base);
-  const quoteKey = normalizeKey(quote);
-  return (
-    Boolean(flags[baseKey]) ||
-    Boolean(flags[`${baseKey}${quoteKey}`]) ||
-    Boolean(flags[`${baseKey}/${quoteKey}`])
-  );
-};
 
 const toUpper = (token: string | null | undefined) =>
   String(token ?? "").trim().toUpperCase();
@@ -100,10 +76,10 @@ const getMatrixValue = (
 type BuildRowsArgs = {
   payload: MatricesLatestResponse | null;
   previewSet: Set<string>;
-  frozenStreaks: Map<string, number>;
+  freezeStageFor: (metric: string, base: string, quote: string) => FrozenStage | null;
 };
 
-function buildMatrixRows({ payload, previewSet, frozenStreaks }: BuildRowsArgs): UiMatrixRow[] {
+function buildMatrixRows({ payload, previewSet, freezeStageFor }: BuildRowsArgs): UiMatrixRow[] {
   if (!payload?.ok) return [];
 
   const quote = toUpper(payload.quote ?? "USDT");
@@ -114,13 +90,6 @@ function buildMatrixRows({ payload, previewSet, frozenStreaks }: BuildRowsArgs):
   const symbolsSet = new Set((payload.symbols ?? []).map(toUpper));
   const benchmarkSlice = payload.matrices?.benchmark;
   const flags = (benchmarkSlice?.flags ?? {}) as MatrixFlags;
-  const frozenGrid = Array.isArray(flags?.frozen) ? flags.frozen : undefined;
-  const frozenSymbolsRaw = flags?.frozenSymbols ?? {};
-  const symbolFlags: Record<string, boolean> = {};
-  for (const [key, value] of Object.entries(frozenSymbolsRaw)) {
-    symbolFlags[normalizeKey(key)] = Boolean(value);
-  }
-
   const pct24Values = payload.matrices?.pct24h?.values ?? {};
   const idValues = payload.matrices?.id_pct?.values ?? {};
   const drvValues = payload.matrices?.pct_drv?.values ?? {};
@@ -132,24 +101,15 @@ function buildMatrixRows({ payload, previewSet, frozenStreaks }: BuildRowsArgs):
   const benchValues = benchmarkSlice?.values ?? {};
 
   return coins.map((base) => {
-    const baseIdx = fullCoins.indexOf(base);
-    const quoteIdx = fullCoins.indexOf(quote);
-
-    const frozenCell =
-      baseIdx >= 0 &&
-      quoteIdx >= 0 &&
-      frozenGrid?.[baseIdx]?.[quoteIdx] === true;
-
-    const symbolFrozen = isSymbolFrozen(symbolFlags, base, quote);
-    const streak = frozenStreaks.get(pairKey(base, quote)) ?? 0;
-
-    let effectiveStage: FrozenStage | null = symbolFrozen
-      ? "long"
-      : streakToStage(streak);
-    if (!effectiveStage && frozenCell) {
-      effectiveStage = "mid";
-    }
-    const frozen = Boolean(effectiveStage);
+    const idStage = freezeStageFor("id_pct", base, quote);
+    const benchStage = freezeStageFor("benchmark", base, quote);
+    const pct24Stage = freezeStageFor("pct24h", base, quote);
+    const refStage = freezeStageFor("pct_ref", base, quote);
+    const refValStage = freezeStageFor("ref", base, quote);
+    const snapPctStage = freezeStageFor("pct_snap", base, quote);
+    const snapStage = freezeStageFor("snap", base, quote);
+    const deltaStage = freezeStageFor("delta", base, quote);
+    const frozen = Boolean(idStage || benchStage || pct24Stage || refStage || refValStage || snapPctStage || snapStage || deltaStage);
 
     const directSymbol = `${base}${quote}`;
     const inverseSymbol = `${quote}${base}`;
@@ -199,40 +159,40 @@ function buildMatrixRows({ payload, previewSet, frozenStreaks }: BuildRowsArgs):
       benchmarkValue == null ? null : benchmarkValue - 1;
 
     const benchmarkColor = colorForChange(benchmarkChange, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: benchStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
     const pctColor = colorForChange(pct24, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 0.0005,
+      frozenStage: pct24Stage ?? undefined,
+      zeroFloor: ZERO_FLOOR_PERCENT,
     });
     const idColor = colorForChange(idPct, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: idStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
     const drvColor = colorForChange(pctDrv, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: idStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
     const refColor = colorForChange(pctRef, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 0.0005,
+      frozenStage: refStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_PERCENT,
     });
     const refValColor = colorForChange(refVal, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: refValStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
     const pctSnapColor = colorForChange(pctSnap, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 0.0005,
+      frozenStage: snapPctStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_PERCENT,
     });
     const snapColor = colorForChange(snapVal, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: snapStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
     const deltaColor = colorForChange(deltaVal, {
-      frozenStage: effectiveStage ?? undefined,
-      zeroFloor: 1e-7,
+      frozenStage: deltaStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
     });
 
     return {
@@ -261,7 +221,7 @@ function buildMatrixRows({ payload, previewSet, frozenStreaks }: BuildRowsArgs):
       delta: { value: deltaVal, color: deltaColor, derivation, ring: pairRing },
       id_pct: { value: idPct, color: idColor, derivation, ring: pairRing },
       pct_drv: { value: pctDrv, color: drvColor, derivation, ring: pairRing },
-      meta: { frozen, frozenStage: effectiveStage },
+      meta: { frozen, frozenStage: idStage },
     };
   });
 }
@@ -706,10 +666,9 @@ export default function MatricesClient() {
   const [payload, setPayload] = useState<MatricesLatestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [previewSymbols, setPreviewSymbols] = useState<string[]>([]);
-  const [frozenStreaks, setFrozenStreaks] = useState<Map<string, number>>(
-    () => new Map()
-  );
+  const freezeMapRef = useRef<Map<string, number>>(new Map());
+  const prevValuesRef = useRef<Map<string, number>>(new Map());
+  const [freezeVersion, setFreezeVersion] = useState(0);
   const { data: settings } = useSettings();
 
   const fetchLatest = useCallback(async () => {
@@ -753,82 +712,104 @@ export default function MatricesClient() {
     return () => clearInterval(id);
   }, [autoRefreshEnabled, pollMs, fetchLatest]);
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch("/api/market/providers/binance/preview", {
-          cache: "no-store",
-        });
-        if (!res.ok) return;
-        const json = await res.json();
-        const symbols = Array.isArray(json)
-          ? json
-          : Array.isArray(json?.symbols)
-          ? json.symbols
-          : [];
-        if (active) setPreviewSymbols(symbols.map(toUpper));
-      } catch (err) {
-        console.warn("[matrices] preview fetch failed", err);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const previewSet = useMemo(() => new Set(previewSymbols), [previewSymbols]);
-
-  const lastFreezeTsRef = useRef<number | null>(null);
+  const previewSet = useMemo(() => new Set<string>(), []);
 
   useEffect(() => {
     if (!payload?.ok) return;
-    const timestampRaw =
-      payload.matrices?.benchmark?.ts ?? payload.ts ?? null;
-    if (typeof timestampRaw !== "number" || !Number.isFinite(timestampRaw))
-      return;
-    if (lastFreezeTsRef.current && timestampRaw <= lastFreezeTsRef.current)
-      return;
-
-    const quoteSymbol = toUpper(payload.quote ?? "USDT");
-    const coinsRaw = Array.isArray(payload.coins)
+    const quoteSym = toUpper(payload.quote ?? "USDT");
+    const rawCoins = Array.isArray(payload.coins)
       ? payload.coins.map(toUpper)
       : [];
-    const bases = coinsRaw.filter((c) => c && c !== quoteSymbol);
-    const fullCoins = [quoteSymbol, ...bases];
-    const idValues = payload.matrices?.id_pct?.values ?? {};
+    const coins = Array.from(new Set<string>([quoteSym, ...rawCoins]));
 
-    setFrozenStreaks((prev) => {
-      const next = new Map<string, number>();
-      for (const base of fullCoins) {
-        for (const quote of fullCoins) {
+    const metricMaps: Array<[string, MatrixValues | undefined]> = [
+      ["benchmark", payload.matrices?.benchmark?.values],
+      ["delta", payload.matrices?.delta?.values],
+      ["pct24h", payload.matrices?.pct24h?.values],
+      ["id_pct", payload.matrices?.id_pct?.values],
+      ["pct_drv", payload.matrices?.pct_drv?.values],
+      ["pct_ref", payload.matrices?.pct_ref?.values],
+      ["ref", payload.matrices?.ref?.values],
+      ["pct_snap", payload.matrices?.pct_snap?.values],
+      ["snap", payload.matrices?.snap?.values],
+    ];
+
+    const nextFreeze = new Map(freezeMapRef.current);
+    const nextPrev = new Map(prevValuesRef.current);
+    const metricsPresent = new Set(
+      metricMaps.filter(([, v]) => v).map(([m]) => m)
+    );
+
+    for (const key of Array.from(nextFreeze.keys())) {
+      const [metric, base, quote] = key.split("|");
+      if (
+        !metricsPresent.has(metric) ||
+        !coins.includes(base) ||
+        !coins.includes(quote)
+      ) {
+        nextFreeze.delete(key);
+        nextPrev.delete(key);
+      }
+    }
+
+    for (const [metric, values] of metricMaps) {
+      if (!values) continue;
+      for (const base of coins) {
+        for (const quote of coins) {
           if (base === quote) continue;
-          const rawValue = idValues?.[base]?.[quote];
-          if (rawValue === null || rawValue === undefined) continue;
-          const num = Number(rawValue);
-          if (!Number.isFinite(num) || Math.abs(num) > FROZEN_EPSILON)
+          const key = `${metric}|${base}|${quote}`;
+          const val = getMatrixValue(values, base, quote);
+          if (val == null || !Number.isFinite(val)) {
+            nextFreeze.delete(key);
+            nextPrev.delete(key);
             continue;
-          const key = pairKey(base, quote);
-          const streak = (prev.get(key) ?? 0) + 1;
-          next.set(key, streak);
+          }
+          const prev = nextPrev.get(key);
+          if (
+            prev != null &&
+            Number.isFinite(prev) &&
+            Math.abs(val - prev) <= FREEZE_DELTA_EPS
+          ) {
+            const streak = (nextFreeze.get(key) ?? 0) + 1;
+            nextFreeze.set(key, streak);
+          } else {
+            nextFreeze.set(key, 0);
+          }
+          nextPrev.set(key, val);
         }
       }
-      return next;
-    });
+    }
 
-    lastFreezeTsRef.current = timestampRaw;
+    freezeMapRef.current = nextFreeze;
+    prevValuesRef.current = nextPrev;
+    setFreezeVersion((v) => v + 1);
   }, [payload]);
 
+  const freezeStageFor = useCallback(
+    (metric: string, base: string, quote: string): FrozenStage | null => {
+      const streak = freezeMapRef.current.get(`${metric}|${base}|${quote}`) ?? 0;
+      if (streak >= 2) return "mid";
+      if (streak >= 1) return "recent";
+      return null;
+    },
+    [freezeVersion]
+  );
+
   const rows = useMemo<UiMatrixRow[]>(() => {
-    return buildMatrixRows({ payload, previewSet, frozenStreaks });
-  }, [payload, previewSet, frozenStreaks]);
+    return buildMatrixRows({ payload, previewSet, freezeStageFor });
+  }, [payload, previewSet, freezeStageFor]);
 
   const coins = useMemo<string[]>(() => {
-    if (!Array.isArray(payload?.coins)) return [];
-    return payload.coins.map(toUpper);
-  }, [payload?.coins]);
+    const quoteSym = toUpper(payload?.quote ?? "USDT");
+    const raw = Array.isArray(payload?.coins) ? payload.coins.map(toUpper) : [];
+    return Array.from(new Set<string>([quoteSym, ...raw]));
+  }, [payload?.coins, payload?.quote]);
 
   const quote = toUpper(payload?.quote ?? "USDT");
+  const baseCoins = useMemo(
+    () => coins.filter((c) => c !== quote),
+    [coins, quote]
+  );
   const benchmarkTs = payload?.matrices?.benchmark?.ts;
   const mood = useMemo(() => computeMood(rows), [rows]);
   const winners = useMemo(() => selectTop(rows, "winners"), [rows]);
@@ -848,7 +829,7 @@ export default function MatricesClient() {
     {
       label: "Pairs tracked",
       value: rows.length,
-      hint: `${coins.length} assets | quote ${quote}`,
+      hint: `${baseCoins.length} assets | quote ${quote}`,
     },
     {
       label: "Opening anchor",
@@ -881,6 +862,24 @@ export default function MatricesClient() {
       hint: error ?? undefined,
     },
   ];
+
+  const matrixConfigs = useMemo(
+    () => {
+      const m = payload?.matrices ?? {};
+      return [
+        { key: "benchmark", label: "Benchmark", values: m.benchmark?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "delta", label: "Delta", values: m.delta?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "pct24h", label: "24h %", values: m.pct24h?.values, isPercent: true, zeroFloor: ZERO_FLOOR_PERCENT },
+        { key: "id_pct", label: "id_pct", values: m.id_pct?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "pct_drv", label: "pct_drv", values: m.pct_drv?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "pct_ref", label: "pct_ref", values: m.pct_ref?.values, isPercent: true, zeroFloor: ZERO_FLOOR_PERCENT },
+        { key: "ref", label: "ref", values: m.ref?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "pct_snap", label: "pct_snap", values: m.pct_snap?.values, isPercent: true, zeroFloor: ZERO_FLOOR_PERCENT },
+        { key: "snap", label: "snap", values: m.snap?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+      ].filter((entry) => entry.values);
+    },
+    [payload?.matrices]
+  );
 
   return (
     <div
@@ -953,24 +952,35 @@ export default function MatricesClient() {
           </div>
         </header>
 
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-          <div className="space-y-6">
-            <LegacyMatrices rows={rows} className="w-full" />
-            <div className="rounded-[28px] bg-slate-950/70 p-4 shadow-[0_45px_110px_-60px_rgba(8,47,73,0.75)]">
-              <MatricesTable rows={rows} />
-            </div>
-          </div>
-          <div className="space-y-6">
-            <MoodAuxPanel
-              snapshot={mood}
-              winners={winners}
-              losers={losers}
-              lastUpdated={benchmarkTs}
-              totalRows={rows.length}
+        <section className="grid gap-6 xl:grid-cols-2">
+          {matrixConfigs.map((entry) => (
+            <MatrixGridTable
+              key={entry.key}
+              title={entry.label}
+              subtitle={`metric ${entry.key}`}
+              metric={entry.key}
+              coins={coins}
+              values={entry.values}
+              isPercent={entry.isPercent}
+              zeroFloor={entry.zeroFloor}
+              freezeStageFor={freezeStageFor}
             />
-            <div className="rounded-[28px] bg-slate-950/70 p-4 shadow-[0_45px_110px_-60px_rgba(8,47,73,0.75)]">
-              <MooAuxCard autoRefreshMs={60_000} className="w-full" />
-            </div>
+          ))}
+        </section>
+
+        <section className="grid gap-6">
+          <MoodAuxPanel
+            snapshot={mood}
+            winners={winners}
+            losers={losers}
+            lastUpdated={benchmarkTs}
+            totalRows={rows.length}
+          />
+        </section>
+
+        <section className="grid">
+          <div className="rounded-[28px] bg-slate-950/70 p-4 shadow-[0_45px_110px_-60px_rgba(8,47,73,0.75)]">
+            <MooAuxCard autoRefreshMs={60_000} className="w-full" />
           </div>
         </section>
       </main>

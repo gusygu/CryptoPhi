@@ -10,7 +10,7 @@ CREATE SCHEMA IF NOT EXISTS cin_aux;
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS cin_aux.sessions (
   session_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_user_id   uuid NOT NULL REFERENCES auth."user"(user_id),
+  owner_user_id   uuid NOT NULL,
   -- Store window as text; optional FK added later via guarded block
   window_label    text NOT NULL,
   window_bins     int    NOT NULL CHECK (window_bins > 0),
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS cin_sessions_window_idx
 
 -- Backward compatible column adds
 ALTER TABLE cin_aux.sessions
-  ADD COLUMN IF NOT EXISTS owner_user_id uuid REFERENCES auth."user"(user_id);
+  ADD COLUMN IF NOT EXISTS owner_user_id uuid;
 ALTER TABLE cin_aux.sessions
   ADD COLUMN IF NOT EXISTS cycle_index bigint NOT NULL DEFAULT 0;
 DO $$

@@ -90,6 +90,58 @@ CREATE TABLE IF NOT EXISTS auth.audit_log (
 
 COMMIT;
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'cin_aux'
+      AND table_name = 'sessions'
+  ) AND EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = '"user"'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_cin_aux_sessions_owner_user'
+      AND conrelid = 'cin_aux.sessions'::regclass
+  ) THEN
+    ALTER TABLE cin_aux.sessions
+      ADD CONSTRAINT fk_cin_aux_sessions_owner_user
+      FOREIGN KEY (owner_user_id)
+      REFERENCES auth."user"(user_id)
+      ON UPDATE CASCADE;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'cin_aux'
+      AND table_name = 'rt_session'
+  ) AND EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = '"user"'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_rt_session_owner_user'
+      AND conrelid = 'cin_aux.rt_session'::regclass
+  ) THEN
+    ALTER TABLE cin_aux.rt_session
+      ADD CONSTRAINT fk_rt_session_owner_user
+      FOREIGN KEY (owner_user_id)
+      REFERENCES auth."user"(user_id)
+      ON UPDATE CASCADE;
+  END IF;
+END$$;
+
 -- see users
 select user_id, email, nickname, is_admin, status, created_at, last_login_at
 from auth."user"
@@ -106,12 +158,29 @@ BEGIN;
 
 -- Example: restrict auth tables to app/admin roles only
 REVOKE ALL ON auth.invite_request FROM PUBLIC;
-REVOKE ALL ON auth.invite_token  FROM PUBLIC;
-REVOKE ALL ON auth.user_account  FROM PUBLIC;
-
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_request TO cp_app, cp_admin;
-GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_token  TO cp_app, cp_admin;
-GRANT SELECT, INSERT, UPDATE, DELETE ON auth.user_account  TO cp_app, cp_admin;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = 'invite_token'
+  ) THEN
+    REVOKE ALL ON auth.invite_token FROM PUBLIC;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_token TO cp_app, cp_admin;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = 'user_account'
+  ) THEN
+    REVOKE ALL ON auth.user_account FROM PUBLIC;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON auth.user_account TO cp_app, cp_admin;
+  END IF;
+END$$;
 
 -- Logs & jobs: readable by app + admin, not by random roles
 REVOKE ALL ON ops.admin_action_log FROM PUBLIC;
@@ -128,17 +197,31 @@ COMMIT;
 BEGIN;
 
 -- Lock down auth tables: no PUBLIC access
-REVOKE ALL ON auth.user_account   FROM PUBLIC;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = 'user_account'
+  ) THEN
+    REVOKE ALL ON auth.user_account FROM PUBLIC;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON auth.user_account TO cp_app, cp_admin;
+    GRANT SELECT ON auth.user_account TO cp_reader;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'auth'
+      AND table_name = 'invite_token'
+  ) THEN
+    REVOKE ALL ON auth.invite_token FROM PUBLIC;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_token TO cp_app, cp_admin;
+  END IF;
+END$$;
+
 REVOKE ALL ON auth.invite_request FROM PUBLIC;
-REVOKE ALL ON auth.invite_token   FROM PUBLIC;
-
--- App + admin can fully manage users & invites
-GRANT SELECT, INSERT, UPDATE, DELETE ON auth.user_account   TO cp_app, cp_admin;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_request TO cp_app, cp_admin;
-GRANT SELECT, INSERT, UPDATE, DELETE ON auth.invite_token   TO cp_app, cp_admin;
-
--- Readers can see users in a limited way if you want (for admin dashboards)
-GRANT SELECT ON auth.user_account TO cp_reader;
 
 -- Lock down logs & job runs
 REVOKE ALL ON ops.admin_action_log FROM PUBLIC;

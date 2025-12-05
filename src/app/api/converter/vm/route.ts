@@ -1,5 +1,6 @@
 // /src/app/api/converter/vm/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { getAll as getSettings } from "@/lib/settings/server";
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -77,7 +78,10 @@ export async function GET(req: NextRequest) {
   const coinsParam = parseCsv(url.searchParams.get("coins"));
   const envCoins = (process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
     .split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-  const coins = coinsParam.length ? coinsParam : envCoins;
+  const settingsCoins = await getSettings()
+    .then((s) => (s.coinUniverse ?? []).map((c) => c.toUpperCase()).filter(Boolean))
+    .catch(() => [] as string[]);
+  const coins = coinsParam.length ? coinsParam : (settingsCoins.length ? settingsCoins : envCoins);
 
   // Candidates (limited to universe and excluding Ca/Cb)
   const candParam = parseCsv(url.searchParams.get("candidates"));

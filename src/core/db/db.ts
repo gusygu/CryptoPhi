@@ -230,6 +230,55 @@ function dedupeUpper(xs: readonly string[] | undefined | null): string[] {
   return out;
 }
 
+const openingStampedSessions = new Set<string>();
+function normalizeSessionId(id: string | null | undefined): string {
+  const s = String(id ?? "").trim();
+  return s || "global";
+}
+
+export function markOpeningStampOnce(appSessionId: string | null | undefined, tsMs: number): {
+  openingStamp: boolean;
+  openingTs: number;
+} {
+  const key = normalizeSessionId(appSessionId);
+  if (openingStampedSessions.has(key)) {
+    return { openingStamp: false, openingTs: tsMs };
+  }
+  openingStampedSessions.add(key);
+  return { openingStamp: true, openingTs: tsMs };
+}
+
+async function shouldStampOpeningOnce(
+  client: PoolClient,
+  appSessionId: string | null | undefined,
+  tsMs: number
+): Promise<{ openingStamp: boolean; openingTs: number }> {
+  const key = normalizeSessionId(appSessionId);
+  if (openingStampedSessions.has(key)) {
+    return { openingStamp: false, openingTs: tsMs };
+  }
+  try {
+    const { rows } = await client.query<{ has: boolean }>(
+      `select exists(
+         select 1
+           from matrices.dyn_values
+          where matrix_type = 'benchmark'
+            and opening_stamp = true
+            and coalesce(meta->>'app_session_id','global') = $1
+       ) as has`,
+      [key]
+    );
+    if (rows[0]?.has) {
+      openingStampedSessions.add(key);
+      return { openingStamp: false, openingTs: tsMs };
+    }
+  } catch {
+    // fall through to allow stamping if check fails
+  }
+  openingStampedSessions.add(key);
+  return { openingStamp: true, openingTs: tsMs };
+}
+
 export async function getMatrixStageTableIdent(
   client?: PoolClient
 ): Promise<string> {
@@ -311,12 +360,20 @@ export async function getLatestByType(matrix_type: string, coins: string[]) {
   } finally { client.release(); }
 }
 
-export async function getPrevValue(matrix_type: string, base: string, quote: string, beforeTs: number) {
+export async function getPrevValue(
+  matrix_type: string,
+  base: string,
+  quote: string,
+  beforeTs: number,
+  appSessionId?: string | null
+) {
+  const sessionKey = normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT value FROM ${TABLE}
      WHERE matrix_type=$1 AND base=$2 AND quote=$3 AND ts_ms < $4
+       AND coalesce(meta->>'app_session_id','global') = $5
      ORDER BY ts_ms DESC LIMIT 1`,
-    [matrix_type, base, quote, beforeTs]
+    [matrix_type, base, quote, beforeTs, sessionKey]
   );
   return rows.length ? Number(rows[0].value) : null;
 }
@@ -350,16 +407,23 @@ export async function getSnapshotByType(matrix_type: string, ts_ms: number, coin
   return rows as { base:string; quote:string; value:number }[];
 }
 
-export async function getPrevSnapshotByType(matrix_type: string, beforeTs: number, coins: string[]) {
+export async function getPrevSnapshotByType(
+  matrix_type: string,
+  beforeTs: number,
+  coins: string[],
+  appSessionId?: string | null
+) {
+  const sessionKey = normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT DISTINCT ON (base, quote) base, quote, value
-       FROM ${TABLE}
-      WHERE matrix_type=$1
-        AND ts_ms < $2
-        AND base  = ANY($3)
-        AND quote = ANY($3)
+        FROM ${TABLE}
+       WHERE matrix_type=$1
+         AND ts_ms < $2
+         AND base  = ANY($3)
+         AND quote = ANY($3)
+         AND coalesce(meta->>'app_session_id','global') = $4
    ORDER BY base, quote, ts_ms DESC`,
-    [matrix_type, beforeTs, coins]
+    [matrix_type, beforeTs, coins, sessionKey]
   );
   return rows as { base: string; quote: string; value: number }[];
 }
@@ -477,35 +541,63 @@ export async function stageMatrixGrid(opts: {
   coins: string[];
   values: MatrixGridObject;
   meta?: any;
+  openingStamp?: boolean;
+  openingTs?: number | null;
+  snapshotStamp?: boolean;
+  snapshotTs?: number | null;
   client?: PoolClient;
 }) {
-  const { appSessionId, matrixType, tsMs, coins, values, meta, client: external } =
-    opts;
+  const {
+    appSessionId,
+    matrixType,
+    tsMs,
+    coins,
+    values,
+    meta,
+    openingStamp,
+    openingTs,
+    snapshotStamp,
+    snapshotTs,
+    client: external,
+  } = opts;
   const client = external ?? (await db.connect());
   const release = !external;
   try {
     const rows = Array.from(cellsOf(coins, values));
     if (!rows.length) return { ok: true, staged: 0 };
 
-    const metaJson = JSON.stringify(meta ?? {});
+    const metaObj = { ...(meta ?? {}), app_session_id: appSessionId };
+    const metaJson = JSON.stringify(metaObj);
+    const openStampVal = openingStamp === true;
+    const openTsVal = openingTs != null ? new Date(openingTs) : null;
+    const snapStampVal = snapshotStamp === true;
+    const snapTsVal = snapshotTs != null ? new Date(snapshotTs) : null;
+
     const stageInfo = await ensureStageInfo(client);
     const text = `
       INSERT INTO ${stageInfo.ident}
-        (ts_ms, matrix_type, base, quote, value, meta, app_session_id)
+        (ts_ms, matrix_type, base, quote, value, meta, app_session_id, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts)
       VALUES ${rows
         .map(
           (_, i) =>
             `($1,$2,$${i * 3 + 3},$${i * 3 + 4},$${i * 3 + 5},$${
               rows.length * 3 + 3
-            },$${rows.length * 3 + 4})`
+            },$${rows.length * 3 + 4},$${rows.length * 3 + 5},$${rows.length * 3 + 6},$${rows.length * 3 + 7},$${rows.length * 3 + 8})`
         )
         .join(",")}
       ON CONFLICT (ts_ms, matrix_type, base, quote)
-      DO UPDATE SET value = EXCLUDED.value, meta = EXCLUDED.meta, app_session_id = EXCLUDED.app_session_id
+      DO UPDATE SET
+        value = EXCLUDED.value,
+        meta = EXCLUDED.meta,
+        app_session_id = EXCLUDED.app_session_id,
+        opening_stamp = ${stageInfo.ident}.opening_stamp OR EXCLUDED.opening_stamp,
+        opening_ts = COALESCE(${stageInfo.ident}.opening_ts, EXCLUDED.opening_ts),
+        snapshot_stamp = ${stageInfo.ident}.snapshot_stamp OR EXCLUDED.snapshot_stamp,
+        snapshot_ts = COALESCE(${stageInfo.ident}.snapshot_ts, EXCLUDED.snapshot_ts)
     `;
     const params: any[] = [tsMs, matrixType];
     for (const r of rows) params.push(r.base, r.quote, r.value);
-    params.push(metaJson, appSessionId);
+    params.push(metaJson, appSessionId, openStampVal, openTsVal, snapStampVal, snapTsVal);
     await client.query(text, params);
     return { ok: true, staged: rows.length };
   } finally {
@@ -560,12 +652,18 @@ export async function commitMatrixGrid(opts: {
     await client.query(
       `
       INSERT INTO ${matrixTable}
-        (ts_ms, matrix_type, base, quote, value, meta)
-      SELECT ts_ms, matrix_type, base, quote, value, meta
+        (ts_ms, matrix_type, base, quote, value, meta, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts)
+      SELECT ts_ms, matrix_type, base, quote, value, meta, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts
         FROM ${stageInfo.ident}
        WHERE ts_ms = $1 AND matrix_type = $2
       ON CONFLICT (ts_ms, matrix_type, base, quote)
-      DO UPDATE SET value = EXCLUDED.value, meta = EXCLUDED.meta
+      DO UPDATE SET
+        value = EXCLUDED.value,
+        meta = EXCLUDED.meta,
+        opening_stamp = ${matrixTable}.opening_stamp OR EXCLUDED.opening_stamp,
+        opening_ts = COALESCE(${matrixTable}.opening_ts, EXCLUDED.opening_ts),
+        snapshot_stamp = ${matrixTable}.snapshot_stamp OR EXCLUDED.snapshot_stamp,
+        snapshot_ts = COALESCE(${matrixTable}.snapshot_ts, EXCLUDED.snapshot_ts)
     `,
       [tsMs, matrixType]
     );
@@ -609,8 +707,8 @@ export async function commitMatrixGrid(opts: {
 }
 
 /** Convenience: read prev benchmark grid for a coin set (paired map) */
-async function mapPrevBenchmark(beforeTs: number, coins: string[]) {
-  const prev = await getPrevSnapshotByType("benchmark", beforeTs, coins);
+async function mapPrevBenchmark(beforeTs: number, coins: string[], appSessionId?: string | null) {
+  const prev = await getPrevSnapshotByType("benchmark", beforeTs, coins, appSessionId);
   const m = new Map<string, number>();
   for (const r of prev) m.set(`${r.base}/${r.quote}`, Number(r.value));
   return m;
@@ -631,75 +729,127 @@ export async function persistLiveMatricesSlice(opts: {
   benchmark: MatrixGridObject;
   pct24h?: MatrixGridObject;
   idemPrefix?: string;
-}) {
-  const { appSessionId, coins, tsMs, benchmark, pct24h, idemPrefix } = opts;
-
-  // 1) stage+commit benchmark
-  await stageMatrixGrid({
+  openingStamp?: boolean;
+  openingTs?: number;
+}): Promise<{ openingStamp: boolean; openingTs: number }> {
+  const {
     appSessionId,
-    matrixType: "benchmark",
-    tsMs,
     coins,
-    values: benchmark,
-    meta: { source: "live" }
-  });
-  await commitMatrixGrid({
-    appSessionId,
-    matrixType: "benchmark",
     tsMs,
-    coins,
-    idem: `${idemPrefix ?? "benchmark"}:${tsMs}`
-  });
+    benchmark,
+    pct24h,
+    idemPrefix,
+    openingStamp,
+    openingTs,
+  } = opts;
 
-  // 2) stage+commit pct24h (optional)
-  if (pct24h) {
-    await stageMatrixGrid({
-      appSessionId,
-      matrixType: "pct24h",
-      tsMs,
-      coins,
-      values: pct24h,
-      meta: { source: "live" }
-    });
-    await commitMatrixGrid({
-      appSessionId,
-      matrixType: "pct24h",
-      tsMs,
-      coins,
-      idem: `${idemPrefix ?? "pct24h"}:${tsMs}`
-    });
-  }
+  const explicitMark =
+    openingStamp === undefined
+      ? null
+      : { openingStamp: Boolean(openingStamp), openingTs: openingTs ?? tsMs };
 
-  // 3) derive id_pct vs prev(benchmark) and persist
-  const prevMap = await mapPrevBenchmark(tsMs, coins);
-  const idObj: MatrixGridObject = {};
-  for (const b of coins) {
-    idObj[b] = {} as Record<string, number | null>;
-    for (const q of coins) {
-      if (b === q) continue;
-      const now = benchmark?.[b]?.[q];
-      const prev = prevMap.get(`${b}/${q}`);
-      if (now == null || prev == null || Math.abs(prev) < 1e-300) {
-        idObj[b][q] = null;
-      } else {
-        idObj[b][q] = (Number(now) - prev) / prev; // id_pct = (bm_new - bm_prev)/bm_prev
+  const sessionKey = normalizeSessionId(appSessionId);
+
+  return withClient(async (client) => {
+    const mark =
+      explicitMark ?? (await shouldStampOpeningOnce(client, appSessionId, tsMs));
+
+    try {
+      await client.query("BEGIN");
+
+      // 1) stage+commit benchmark
+      await stageMatrixGrid({
+        appSessionId,
+        matrixType: "benchmark",
+        tsMs,
+        coins,
+        values: benchmark,
+        meta: { source: "live" },
+        openingStamp: mark.openingStamp,
+        openingTs: mark.openingTs,
+        client,
+      });
+      await commitMatrixGrid({
+        appSessionId,
+        matrixType: "benchmark",
+        tsMs,
+        coins,
+        idem: `${idemPrefix ?? "benchmark"}:${tsMs}`,
+        client,
+      });
+
+      // 2) stage+commit pct24h (optional)
+      if (pct24h) {
+        await stageMatrixGrid({
+          appSessionId,
+          matrixType: "pct24h",
+          tsMs,
+          coins,
+          values: pct24h,
+          meta: { source: "live" },
+          openingStamp: mark.openingStamp,
+          openingTs: mark.openingTs,
+          client,
+        });
+        await commitMatrixGrid({
+          appSessionId,
+          matrixType: "pct24h",
+          tsMs,
+          coins,
+          idem: `${idemPrefix ?? "pct24h"}:${tsMs}`,
+          client,
+        });
       }
+
+      // 3) derive id_pct vs prev(benchmark) and persist
+  const prevMap = await mapPrevBenchmark(tsMs, coins, appSessionId);
+      const idObj: MatrixGridObject = {};
+      for (const b of coins) {
+        idObj[b] = {} as Record<string, number | null>;
+        for (const q of coins) {
+          if (b === q) continue;
+          const now = benchmark?.[b]?.[q];
+          const prev = prevMap.get(`${b}/${q}`);
+          if (now == null || prev == null || Math.abs(prev) < 1e-300) {
+            idObj[b][q] = null;
+          } else {
+            idObj[b][q] = (Number(now) - prev) / prev; // id_pct = (bm_new - bm_prev)/bm_prev
+          }
+        }
+      }
+      await stageMatrixGrid({
+        appSessionId,
+        matrixType: "id_pct",
+        tsMs,
+        coins,
+        values: idObj,
+        meta: { source: "derived@db", base: "prev(benchmark)" },
+        openingStamp: mark.openingStamp,
+        openingTs: mark.openingTs,
+        client,
+      });
+      await commitMatrixGrid({
+        appSessionId,
+        matrixType: "id_pct",
+        tsMs,
+        coins,
+        idem: `${idemPrefix ?? "id_pct"}:${tsMs}`,
+        client,
+      });
+
+      await client.query("COMMIT");
+      return mark;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        /* ignore rollback errors */
+      }
+      if (mark.openingStamp) {
+        openingStampedSessions.delete(sessionKey);
+      }
+      throw err;
     }
-  }
-  await stageMatrixGrid({
-    appSessionId,
-    matrixType: "id_pct",
-    tsMs,
-    coins,
-    values: idObj,
-    meta: { source: "derived@db", base: "prev(benchmark)" }
-  });
-  await commitMatrixGrid({
-    appSessionId,
-    matrixType: "id_pct",
-    tsMs,
-    coins,
-    idem: `${idemPrefix ?? "id_pct"}:${tsMs}`
   });
 }
 
@@ -712,37 +862,47 @@ type Step = { name: string; files: string[] };
 const BASE_STEP: Step = {
   name: "BASE DDLs",
   files: [
-    "00_extensions.sql",
-    "01_settings.sql",
-    "02_market.sql",
-    "03_docs.sql",
-    "04_matrices.sql",
-    "05_str_aux.sql",
-    "06_cin_aux_core.sql",
-    "07_cin_aux_runtime.sql",
-    "08_cin_aux_functions.sql",
-    "09_ops.sql",
-    "09_ingest.sql",
-    "10_helpers.sql",
-    "11_views_latest.sql",
+    "00_schemas.sql",
+    "01_extensions.sql",
+    "02_a_ops_session_stamp.sql",
+    "02_b_ops_open_guard.sql",
+    "02_settings.sql",
+    "03_market.sql",
+    "04_documents.sql",
+    "05_wallet.sql",
+    "06_compat_ops.sql",
+    "07_matrices.sql",
+    "08_str-aux.sql",
+    "09_cin-aux-core.sql",
+    "10_cin-aux-runtime.sql",
+    "11_cin-aux-functions.sql",
+    "12_mea_dynamics.sql",
+    "13_ops.sql",
+    "14_views-latest.sql",
+    "15_admin.sql",
+    "16_ingest.sql",
+    "17_units.sql",
+    "18_str-aux_support.sql",
+    "19_debug.sql",
+    "20_cin_aux_views.sql",
+    "21_auth.sql",
+    "22_auth-invites.sql",
+    "23_admin_action-log.sql",
+    "24_audit.sql",
+    "25_rls.sql",
+    "26_mail.sql",
+    "27_snapshot.sql",
+    "28_mgmt.sql",
+    "29_profile.sql",
+    "30_snapshot_stamps.sql",
+    "31_wallet.sql",
+    "99_security.sql",
   ],
 };
 
 const PATCH_STEP: Step = {
   name: "PATCH SET v1",
-  files: [
-    "01_settings_patches.sql",
-    "02_market_patches.sql",
-    "03_docs_patches.sql",
-    "04_matrices_patches.sql",
-    "05_str_aux_patches.sql",
-    "06_cin_aux_core_patches.sql",
-    "07_cin_aux_runtime_patches.sql",
-    "08_cin_aux_functions_patches.sql",
-    "09_mea_dynamics_patches.sql",
-    "10_ops_patches.sql",
-    "11_remove_bootstrap.sql",
-  ],
+  files: [],
 };
 
 const SEED_STEP: Step = { name: "SEEDS", files: ["01_seed.sql", "02_seed_jobs.sql"] };
@@ -767,7 +927,8 @@ export async function runDbTool(
     import("dotenv"),
   ]);
 
-  const ROOT = resolve(process.cwd(), opts.root ?? "db");
+  const rootTarget = opts.root ?? join("src", "core", "db", "ddl");
+  const ROOT = resolve(process.cwd(), rootTarget);
   const ENV_FILE = join(ROOT, ".env.db");
   if (fs.existsSync(ENV_FILE)) {
     dotenv.config({ path: ENV_FILE });

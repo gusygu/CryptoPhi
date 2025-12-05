@@ -2,8 +2,10 @@
 import { Pool } from "pg";
 import type { ScalesSettings } from "@/core/pipelines/types";
 import { ServerPoller } from "./poller.server";
+import { resolveCycleSeconds } from "@/core/settings/time";
+import { getAppSessionId } from "@/core/system/appSession";
 
-const APP_SESSION_ID = process.env.APP_SESSION_ID ?? process.env.APP_SESSION ?? null;
+const APP_SESSION_ID = getAppSessionId();
 
 type SettingsRow = {
   coinsCsv: string | null;
@@ -21,9 +23,11 @@ async function loadSettings(appSessionId: string | null): Promise<{ coins: strin
   const coinsEnv = (process.env.COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,DOGE,USDT")
     .split(",").map(s => s.trim()).filter(Boolean);
 
+  const cycleSeconds = await resolveCycleSeconds(appSessionId).catch(() => null);
+  const cyclePeriod = cycleSeconds != null ? `${cycleSeconds}s` : "80s";
   const defaults: ScalesSettings = {
-    cycle: { period: "1m" },
-    continuous: { period: "1m" },
+    cycle: { period: cyclePeriod },
+    continuous: { period: cyclePeriod },
   };
 
   let row: SettingsRow | null = null;
@@ -77,15 +81,15 @@ async function loadSettings(appSessionId: string | null): Promise<{ coins: strin
     .split(",").map((s: string) => s.trim()).filter(Boolean);
 
   const rawScales = row?.scalesJson ?? defaults;
-  const norm: ScalesSettings = normalizeScales(rawScales);
+  const norm: ScalesSettings = normalizeScales(rawScales, cyclePeriod);
 
   const stamp = JSON.stringify({ coins, scales: norm, updatedAt: row?.updatedAt ?? Date.now() });
   return { coins, scales: norm, stamp };
 }
 
-function normalizeScales(x: any): ScalesSettings {
+function normalizeScales(x: any, cycleFallback: string): ScalesSettings {
   const wrap = (v: any) => (typeof v === "object" && v?.period ? v : { period: v });
-  const cycle = wrap(x?.cycle ?? "1m");
+  const cycle = wrap(x?.cycle ?? cycleFallback);
   const out: ScalesSettings = {
     cycle,
     continuous: x?.continuous ? wrap(x.continuous) : { period: cycle.period },
@@ -93,7 +97,6 @@ function normalizeScales(x: any): ScalesSettings {
     window:     x?.window     ? wrap(x.window)     : undefined,
   };
   // keep strings; PollHub already accepts string periods; it will parse/align.
-  // (If you want all numbers here, convert: out.cycle = toMs(cycle); etc.)
   return out;
 }
 

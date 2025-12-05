@@ -9,6 +9,9 @@ import {
   syncCoinUniverseFromBases,
 } from "@/lib/settings/coin-universe";
 import { DEFAULT_SETTINGS, migrateSettings, type AppSettings } from "./schema";
+import { resolveCycleSeconds } from "@/core/settings/time";
+import { query, getPool } from "@/core/db/pool_server";
+import { getAppSessionId } from "@/core/system/appSession";
 
 const COOKIE_KEY = "appSettings";
 const LEGACY_COOKIE_KEYS = ["cp_settings_v1"];
@@ -28,6 +31,12 @@ export async function getAll(): Promise<AppSettings> {
   const raw = jar.get(COOKIE_KEY)?.value;
   const parsed = safeParseJSON(raw);
   const settings = migrateSettings(parsed ?? DEFAULT_SETTINGS);
+  try {
+    const cycleSeconds = await resolveCycleSeconds(getAppSessionId());
+    settings.timing.autoRefreshMs = Math.max(1_000, cycleSeconds * 1_000);
+  } catch {
+    // keep migrated value on failure
+  }
   const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
   settings.coinUniverse = dbCoins.length ? dbCoins : normalizeCoinList(settings.coinUniverse);
   return settings;
@@ -61,6 +70,29 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   };
 
   await recordSettingsCookieSnapshot(value);
+  // persist timing into DB (global/app-session scoped)
+  const cycleSeconds = Math.max(1, Math.round(normalized.timing.autoRefreshMs / 1000));
+  const sessionKey = getAppSessionId() ?? "global";
+  try {
+    if (sessionKey === "global") {
+      await query(`select settings.sp_upsert_personal_time_setting($1,$2)`, [sessionKey, cycleSeconds]);
+    } else {
+      const c = await getPool().connect();
+      try {
+        await c.query("BEGIN");
+        await c.query(`select set_config('app.current_session_id', $1, true)`, [sessionKey]);
+        await c.query(`select settings.sp_upsert_personal_time_setting($1,$2)`, [sessionKey, cycleSeconds]);
+        await c.query("COMMIT");
+      } catch (err) {
+        try { await c.query("ROLLBACK"); } catch {}
+        throw err;
+      } finally {
+        c.release();
+      }
+    }
+  } catch {
+    // best-effort; ignore DB failures for cookie writes
+  }
 
   return { settings: normalized, cookie };
 }

@@ -49,7 +49,7 @@ import { db } from "@/core/db";
 async function str_getIdPctHistory(from: string, to: string, lastN = 6) {
   const q = `
     select value
-      from dyn_matrix_values
+      from matrices.dyn_values
      where matrix_type='id_pct' and base=$1 and quote=$2
      order by ts_ms desc
      limit $3`;
@@ -60,7 +60,7 @@ async function str_getIdPctHistory(from: string, to: string, lastN = 6) {
 async function str_getIdPctHistoryTs(from: string, to: string, lastN = 8) {
   const q = `
     select ts_ms, value
-      from dyn_matrix_values
+      from matrices.dyn_values
      where matrix_type='id_pct' and base=$1 and quote=$2
      order by ts_ms desc
      limit $3`;
@@ -75,7 +75,7 @@ async function str_getIdPctHistoryTs(from: string, to: string, lastN = 8) {
 async function str_getPctDrvHistory(from: string, to: string, lastN = 6) {
   const q = `
     select value
-      from dyn_matrix_values
+      from matrices.dyn_values
      where matrix_type='pct_drv' and base=$1 and quote=$2
      order by ts_ms desc
      limit $3`;
@@ -94,7 +94,7 @@ async function str_getPctDrvHistory(from: string, to: string, lastN = 6) {
 async function str_getPctDrvHistoryTs(from: string, to: string, lastN = 8) {
   const q = `
     select ts_ms, value
-      from dyn_matrix_values
+      from matrices.dyn_values
      where matrix_type='pct_drv' and base=$1 and quote=$2
      order by ts_ms desc
      limit $3`;

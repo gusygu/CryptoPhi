@@ -16,22 +16,74 @@ const makeGrid = (n: number) =>
   Array.from({ length: n }, () => Array(n).fill(null as number | null));
 
 const DEFAULT_WINDOW = "1h";
+const openingTsCache = new Map<string, number>();
+const cacheKeyForOpening = (args: OpeningArgs, window: string, pivot: string) =>
+  `${args.appSessionId ?? "global"}|${window}|${pivot}`;
 
-// Optional helper: pull opening timestamp from strategy helper when available.
-async function resolveOpeningTs(
-  appSessionId: string | null | undefined,
-  window: string
-): Promise<number | null> {
+async function loadOpeningFromDynValues(
+  coins: string[],
+  appSessionId?: string | null
+): Promise<{ ts: number; grid: Grid } | null> {
+  if (!coins.length) return null;
+  const upperCoins = coins.map((c) => c.toUpperCase());
+  const grid = makeGrid(upperCoins.length);
+  const idx = new Map<string, number>();
+  upperCoins.forEach((c, i) => idx.set(c, i));
+  const sessionKey = (appSessionId ?? "global").trim() || "global";
+
   try {
-    const { rows } = await db.query<{ ts_ms: string }>(
-      `select ts_ms from get_session_opening_ts($1::text, $2::text) limit 1`,
-      [appSessionId ?? null, window]
+    const { rows } = await db.query<{
+      base: string;
+      quote: string;
+      value: string | number;
+      ots: string | null;
+      ts_ms: string | number;
+    }>(
+      `
+      WITH latest AS (
+        SELECT
+          ts_ms,
+          COALESCE(opening_ts, to_timestamp(ts_ms / 1000.0)) AS ots
+        FROM matrices.dyn_values
+        WHERE matrix_type = 'benchmark'
+          AND opening_stamp = TRUE
+          AND COALESCE(meta->>'app_session_id','global') = $2
+        ORDER BY ots DESC NULLS LAST, ts_ms DESC
+        LIMIT 1
+      )
+      SELECT dv.base, dv.quote, dv.value, l.ots, l.ts_ms
+        FROM matrices.dyn_values dv
+        JOIN latest l
+          ON l.ts_ms = dv.ts_ms
+       WHERE dv.matrix_type = 'benchmark'
+         AND dv.base  = ANY($1::text[])
+         AND dv.quote = ANY($1::text[])
+      `,
+      [upperCoins, sessionKey]
     );
-    if (rows?.[0]?.ts_ms) return Number(rows[0].ts_ms);
+
+    if (!rows?.length) return null;
+
+    const first = rows[0]!;
+    const tsMs = Number(first.ts_ms);
+    const tsFromOpening = first.ots ? Date.parse(first.ots) : tsMs;
+    const effectiveTs = Number.isFinite(tsFromOpening) ? tsFromOpening : tsMs;
+
+    for (const row of rows) {
+      const b = String(row.base ?? "").toUpperCase();
+      const q = String(row.quote ?? "").toUpperCase();
+      const bi = idx.get(b);
+      const qj = idx.get(q);
+      if (bi == null || qj == null || bi === qj) continue;
+      const v = Number(row.value);
+      if (!Number.isFinite(v)) continue;
+      grid[bi][qj] = v;
+    }
+
+    return { ts: effectiveTs, grid };
   } catch {
-    // helper may not exist; swallow.
+    return null;
   }
-  return null;
 }
 
 export async function fetchOpeningGridFromView(
@@ -41,110 +93,19 @@ export async function fetchOpeningGridFromView(
   const n = coins.length;
   const windowLabel = (args.window ?? DEFAULT_WINDOW).toLowerCase();
   const pivot = (args.quote ?? "USDT").toUpperCase();
+  const cacheKey = cacheKeyForOpening(args, windowLabel, pivot);
 
-  let openingTs = args.openingTs ?? null;
-  if (!openingTs) {
-    openingTs = await resolveOpeningTs(args.appSessionId ?? null, windowLabel);
+  const dbOpening = await loadOpeningFromDynValues(coins, args.appSessionId);
+  if (dbOpening) {
+    openingTsCache.set(cacheKey, dbOpening.ts);
+    return { ts: dbOpening.ts, grid: dbOpening.grid };
   }
 
+  // No opening for this session; return empty grid so pct_ref stays null
   const grid = makeGrid(n);
-  if (!n) {
-    return { ts: openingTs ?? 0, grid };
-  }
-
-  const targetSymbols = new Set<string>();
-  for (const coin of coins) {
-    if (coin === pivot) continue;
-    targetSymbols.add(`${coin}${pivot}`);
-    targetSymbols.add(`${pivot}${coin}`);
-  }
-
-  if (!targetSymbols.size) {
-    return { ts: openingTs ?? 0, grid };
-  }
-
-  const startDate = openingTs != null ? new Date(openingTs) : null;
-  const candidateWindows = Array.from(new Set([windowLabel, "1m"]));
-
-  const { rows } = await db.query<{
-    symbol: string;
-    base: string | null;
-    quote: string | null;
-    close_price: string;
-    close_time: string;
-    window_label: string;
-  }>(
-    `
-    SELECT
-      k.symbol,
-      (public._split_symbol(k.symbol)).base AS base,
-      (public._split_symbol(k.symbol)).quote AS quote,
-      k.close_price,
-      k.close_time,
-      k.window_label
-    FROM market.klines k
-    WHERE k.symbol = ANY($1::text[])
-      AND k.window_label = ANY($2::text[])
-      AND ($3::timestamptz IS NULL OR k.close_time >= $3::timestamptz)
-    ORDER BY
-      k.symbol,
-      CASE WHEN k.window_label = $4 THEN 0 ELSE 1 END,
-      k.close_time ASC
-    `,
-    [Array.from(targetSymbols), candidateWindows, startDate, windowLabel]
-  );
-
-  const seen = new Set<string>();
-  let effectiveTs = openingTs ?? 0;
-  const priceMap = new Map<string, number>();
-  priceMap.set(pivot, 1);
-
-  for (const row of rows) {
-    const symbol = String(row.symbol ?? "").toUpperCase();
-    if (!symbol || seen.has(symbol)) continue;
-    const base = String(row.base ?? "").toUpperCase();
-    const quote = String(row.quote ?? "").toUpperCase();
-    const price = Number(row.close_price);
-    if (!Number.isFinite(price)) continue;
-
-    if (quote === pivot) {
-      priceMap.set(base, price);
-    } else if (base === pivot && Math.abs(price) > 1e-12) {
-      priceMap.set(quote, 1 / price);
-    } else {
-      continue;
-    }
-
-    seen.add(symbol);
-
-    const tsMs = Date.parse(row.close_time);
-    if (Number.isFinite(tsMs) && tsMs > effectiveTs) {
-      effectiveTs = tsMs;
-    }
-  }
-
-  for (let i = 0; i < n; i++) {
-    const baseCoin = coins[i]!;
-    const basePrice = priceMap.get(baseCoin) ?? null;
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      const quoteCoin = coins[j]!;
-      const quotePrice = priceMap.get(quoteCoin) ?? null;
-      if (
-        basePrice != null &&
-        quotePrice != null &&
-        Number.isFinite(basePrice) &&
-        Number.isFinite(quotePrice) &&
-        Math.abs(quotePrice) > 1e-12
-      ) {
-        grid[i][j] = basePrice / quotePrice;
-      } else {
-        grid[i][j] = null;
-      }
-    }
-  }
-
-  return { ts: effectiveTs, grid };
+  const ts = args.openingTs ?? openingTsCache.get(cacheKey) ?? Date.now();
+  openingTsCache.set(cacheKey, ts);
+  return { ts, grid };
 }
 
 export async function getOpeningPairValue(args: {

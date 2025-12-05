@@ -6,7 +6,7 @@ type Matrix = { key: string; grid: Record<string, Record<string, Cell>>; ts: num
 const memory: { version: number; ts: number; matrix: Matrix | null } = {
   version: -1, ts: 0, matrix: null
 };
-const TTL = 35_000; // keep slightly below autoRefreshMs
+const TTL = 75_000; // keep slightly below default 80s auto-refresh
 export async function getMatrices(): Promise<Matrix> {
   const { settings, version } = await getSettingsWithVersion();
   const now = Date.now();

@@ -3,68 +3,45 @@
 import React, { useMemo } from "react";
 import { DynamicsCard } from "@/components/features/dynamics/DynamicsCard";
 import { classNames, formatNumber, formatPercent, uniqueUpper } from "@/components/features/dynamics/utils";
-import {
-  resolveCellPresentation,
-  POSITIVE_SHADES,
-  NEGATIVE_SHADES,
-  MOO_POSITIVE_SHADES,
-  MOO_NEGATIVE_SHADES,
-  type MatrixColorRules,
-} from "@/components/features/matrices/colouring";
-import { withAlpha } from "@/components/features/matrices/colors";
+import { colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
 
-type MetricKind = "mea" | "ref";
 type Grid = Array<Array<number | null>>;
 
 export type DynamicsMatrixProps = {
   coins: string[];
-  mea?: Grid;
-  ref?: Grid;
+  /** id_pct grid (base x quote) */
   idPct?: Grid;
-  frozenGrid?: boolean[][];
-  allowedSymbols?: Set<string>;
-  previewSet?: Set<string>;
+  /** moo_aux (mea) grid (base x quote) */
+  mea?: Grid;
+  /** Symbols that come from API payload (used to mark bridged/anti-symmetric) */
   payloadSymbols?: string[];
+  /** Preview symbols available live; drives the green rings */
+  previewSet?: Set<string>;
+  /** Allowed symbols (if provided) to gate clicks */
+  allowedSymbols?: Set<string>;
+  /** Optional frozen stage resolver (based on previous cycles) */
+  freezeStageFor?: (base: string, quote: string) => FrozenStage | null;
   selected?: { base: string; quote: string } | null;
   lastUpdated?: number | string | Date | null;
   loading?: boolean;
-  onSelect?: (payload: { base: string; quote: string; value: number | null; metric: MetricKind; assetId: string }) => void;
+  onSelect?: (payload: { base: string; quote: string; value: number | null; metric: "id_pct" | "moo" }) => void;
   className?: string;
 };
 
-const FREEZE_EPS = 1e-8;
-const NULL_BACKGROUND = "rgba(250,204,21,0.24)";
+const ZERO_FLOOR = 1e-7;
+const NULL_BG = "rgba(250,204,21,0.2)";
 const NULL_TEXT = "#422006";
 
-const ensureUpper = (value: string | null | undefined): string => String(value ?? "").trim().toUpperCase();
+const MOO_SHADES_POS = ["#0ea5e9", "#1fb2f5", "#38bdf8", "#7dd3fc"];
+const MOO_SHADES_NEG = ["#0b3b73", "#0e4f94", "#155fa8", "#1c71c2"];
 
-const MEA_THRESHOLDS: readonly number[] = [0.0025, 0.005, 0.01, 0.02, 0.04];
-const REF_THRESHOLDS: readonly number[] = [0.003, 0.006, 0.012, 0.024, 0.048];
+const ensureUpper = (v: string | null | undefined) => String(v ?? "").trim().toUpperCase();
 
-const MEA_COLOR_RULES: MatrixColorRules = {
-  key: "mea",
-  thresholds: MEA_THRESHOLDS,
-  positivePalette: MOO_POSITIVE_SHADES,
-  negativePalette: MOO_NEGATIVE_SHADES,
-  zeroFloor: 0.0008,
-  derive: (value) => (value == null ? null : value - 1),
-  ringStrategy: "preview",
-};
-
-const REF_COLOR_RULES: MatrixColorRules = {
-  key: "ref",
-  thresholds: REF_THRESHOLDS,
-  positivePalette: POSITIVE_SHADES,
-  negativePalette: NEGATIVE_SHADES,
-  zeroFloor: 0.0004,
-  derive: (value) => value,
-  ringStrategy: "preview",
-};
-
-function safeValue(grid: Grid | undefined, i: number, j: number): number | null {
+function valueFromGrid(grid: Grid | undefined, i: number, j: number): number | null {
   const v = grid?.[i]?.[j];
-  if (v == null || !Number.isFinite(v)) return null;
-  return v;
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function formatRelative(ts?: number | string | Date | null): string {
@@ -89,219 +66,140 @@ function formatRelative(ts?: number | string | Date | null): string {
   return `${days}d ${hours % 24}h ago`;
 }
 
-type MetricButtonProps = {
-  metric: MetricKind;
-  value: number | null;
-  presentation: ReturnType<typeof resolveCellPresentation>;
-  disabled: boolean;
-  idPercent?: number | null;
-  onClick(): void;
-};
+function mooColor(value: number | null, stage: FrozenStage | null): string {
+  if (stage) return withAlpha("#a855f7", stage === "mid" ? 0.95 : 0.7);
+  if (value == null || !Number.isFinite(value)) return NULL_BG;
 
-function MetricButton({ metric, value, presentation, disabled, idPercent, onClick }: MetricButtonProps) {
-  const hasValue = value != null && Number.isFinite(value);
-  const precision = metric === "mea" ? 6 : 7;
-  const formatted = formatNumber(value, {
-    fallback: metric === "mea" ? "no moo" : "no ref",
-    precision,
-    minimumFractionDigits: metric === "mea" ? undefined : 7,
-  });
-  const background = hasValue ? presentation.background : NULL_BACKGROUND;
-  const ringColor = presentation.ringColor ?? "rgba(148,163,184,0.35)";
-  const textColor = hasValue
-    ? presentation.textColor ??
-      (presentation.polarity === "negative"
-        ? "#fde8e8"
-        : presentation.polarity === "positive"
-        ? "#022c22"
-        : "#e2e8f0")
-    : NULL_TEXT;
-
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={classNames(
-        "flex w-full items-center justify-between gap-3 rounded-full border px-3 py-1.5 text-left transition",
-        disabled ? "cursor-not-allowed opacity-45" : "hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(14,116,144,0.25)]"
-      )}
-      style={{
-        background,
-        color: textColor,
-        borderColor: withAlpha(ringColor, 0.65),
-        boxShadow: `0 8px 18px ${withAlpha(ringColor, 0.15)}, inset 0 1px 0 rgba(255,255,255,0.08)`,
-      }}
-    >
-      <div className="min-w-0 text-[9px] uppercase tracking-[0.32em] text-slate-100/80">
-        {metric === "mea" ? "MOO" : "REF"}
-      </div>
-      <div className="flex flex-1 flex-col items-end">
-        <span className="font-mono text-sm leading-tight tracking-tight">{formatted}</span>
-        {metric === "mea" && idPercent != null ? (
-          <span className="text-[10px] text-emerald-100">
-            {formatPercent(idPercent, { precision: 7, minimumFractionDigits: 7, fallback: "-" })}
-          </span>
-        ) : null}
-      </div>
-    </button>
-  );
+  const drift = value - 1;
+  const mag = Math.abs(drift);
+  if (mag <= ZERO_FLOOR) return withAlpha("#facc15", 0.55);
+  const idx = Math.min(3, Math.floor(Math.log10(mag / 0.0005 + 1) * 2));
+  const palette = drift >= 0 ? MOO_SHADES_POS : MOO_SHADES_NEG;
+  return withAlpha(palette[idx] ?? palette[palette.length - 1]!, 0.9);
 }
 
-export default function DynamicsMatrix(props: DynamicsMatrixProps) {
-  const {
-    coins,
-    mea,
-    ref,
-    idPct,
-    frozenGrid,
-    allowedSymbols,
-    previewSet,
-    payloadSymbols,
-    selected,
-    lastUpdated,
-    loading,
-    onSelect,
-    className,
-  } = props;
+function textForValue(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return formatNumber(value, { precision: 7, minimumFractionDigits: 7, fallback: "—" });
+}
+
+export default function DynamicsMatrix({
+  coins,
+  idPct,
+  mea,
+  payloadSymbols,
+  previewSet,
+  allowedSymbols,
+  freezeStageFor,
+  selected,
+  lastUpdated,
+  loading,
+  onSelect,
+  className,
+}: DynamicsMatrixProps) {
   const rows = useMemo(() => uniqueUpper(coins ?? []), [coins]);
   const cols = rows;
-  const columnCount = cols.length || 1;
-  const cellWidth = useMemo(
-    () => Math.max(72, Math.min(148, Math.floor(960 / Math.max(columnCount, 1)))),
-    [columnCount]
-  );
-  const rowHeaderWidth = Math.max(64, Math.min(128, Math.floor(cellWidth * 0.85)));
-  const selectedBase = selected?.base ? String(selected.base).toUpperCase() : null;
-  const selectedQuote = selected?.quote ? String(selected.quote).toUpperCase() : null;
-
-  const status = loading ? "Loading matrix..." : `Snapshot | ${formatRelative(lastUpdated ?? null)}`;
-
-  const previewSymbols = useMemo(() => previewSet ?? new Set<string>(), [previewSet]);
-  const payloadSymbolSet = useMemo(() => {
-    if (!payloadSymbols?.length) return undefined;
-    const set = new Set<string>();
-    for (const sym of payloadSymbols) {
-      set.add(ensureUpper(sym));
-    }
-    return set;
+  const preview = useMemo(() => previewSet ?? new Set<string>(), [previewSet]);
+  const payload = useMemo(() => {
+    if (!payloadSymbols?.length) return new Set<string>();
+    return new Set(payloadSymbols.map(ensureUpper));
   }, [payloadSymbols]);
-  const symbolSets = useMemo(
-    () => ({ preview: previewSymbols, payload: payloadSymbolSet }),
-    [previewSymbols, payloadSymbolSet]
-  );
 
-  const renderCell = (rowIdx: number, colIdx: number) => {
-    const base = rows[rowIdx]!;
-    const quote = cols[colIdx]!;
-    const isDiagonal = base === quote;
-    const directSymbol = `${base}${quote}`;
-    const inverseSymbol = `${quote}${base}`;
-    const pairAllowed = allowedSymbols?.size
-      ? allowedSymbols.has(directSymbol) || allowedSymbols.has(inverseSymbol)
-      : true;
+  const columnCount = cols.length || 1;
+  const cellWidth = Math.max(44, Math.min(68, Math.floor(600 / Math.max(columnCount * 1.1, 1))));
+  const rowHeaderWidth = Math.max(64, Math.min(110, Math.floor(cellWidth * 1.25)));
 
-    if (isDiagonal) {
+  const selectedBase = ensureUpper(selected?.base);
+  const selectedQuote = ensureUpper(selected?.quote);
+
+  const status = loading ? "Loading dynamics…" : `Snapshot • ${formatRelative(lastUpdated ?? null)}`;
+
+  const ringFor = (base: string, quote: string, stage: FrozenStage | null): string => {
+    if (stage) return "#c084fc";
+    const sym = `${base}${quote}`;
+    if (preview.has(sym)) return "#4ade80";
+    if (payload.has(sym)) return "#f87171";
+    return "#94a3b8";
+  };
+
+  const renderCell = (i: number, j: number) => {
+    const base = rows[i]!;
+    const quote = cols[j]!;
+    if (base === quote) {
       return (
         <td key={`${base}-${quote}`} className="p-0.5" style={{ minWidth: cellWidth }}>
-          <div className="pointer-events-none flex min-h-[48px] items-center justify-center rounded-2xl border border-slate-800/50 bg-slate-900/40 text-[11px] text-slate-500">
+          <div className="flex min-h-[60px] items-center justify-center rounded-xl border border-slate-800/60 bg-slate-900/40 text-[10px] text-slate-500">
             —
           </div>
         </td>
       );
     }
 
-    const meaValue = safeValue(mea, rowIdx, colIdx);
-    const refValue = safeValue(ref, rowIdx, colIdx);
-    const idValue = safeValue(idPct, rowIdx, colIdx);
+    const stage = freezeStageFor?.(base, quote) ?? null;
+    const idVal = valueFromGrid(idPct, i, j);
+    const mooVal = valueFromGrid(mea, i, j);
 
-    const frozen =
-      Boolean(frozenGrid?.[rowIdx]?.[colIdx]) ||
-      (idValue != null && Math.abs(idValue) <= FREEZE_EPS) ||
-      (refValue != null && Math.abs(refValue) <= FREEZE_EPS);
+    const ringColor = ringFor(base, quote, stage);
+    const idColor = colorForChange(idVal, { frozenStage: stage ?? undefined, zeroFloor: ZERO_FLOOR });
+    const mooBg = mooColor(mooVal, stage);
 
-    const meaPresentation = resolveCellPresentation({
-      rules: MEA_COLOR_RULES,
-      value: meaValue,
-      frozen,
-      directSymbol,
-      inverseSymbol,
-      symbolSets,
-    });
-
-    const refPresentation = resolveCellPresentation({
-      rules: REF_COLOR_RULES,
-      value: refValue,
-      frozen,
-      directSymbol,
-      inverseSymbol,
-      symbolSets,
-    });
+    const pairAllowed =
+      allowedSymbols == null ||
+      allowedSymbols.has(`${base}${quote}`) ||
+      allowedSymbols.has(`${quote}${base}`);
 
     const isSelected = selectedBase === base && selectedQuote === quote;
-    const ringColor = meaPresentation.ringColor ?? refPresentation.ringColor ?? "rgba(148,163,184,0.3)";
 
     return (
       <td key={`${base}-${quote}`} className="p-0.5 align-top" style={{ minWidth: cellWidth }}>
-        <div
+        <button
+          type="button"
+          disabled={!pairAllowed}
+          onClick={() => onSelect?.({ base, quote, value: idVal, metric: "id_pct" })}
           className={classNames(
-            "rounded-2xl border border-transparent bg-[#04070d]/85 p-2",
-            "transition-shadow",
-            isSelected ? "shadow-[0_0_0_2px_rgba(94,234,212,0.55)]" : "shadow-[0_4px_20px_rgba(2,6,23,0.45)]"
+            "group flex h-full w-full flex-col gap-0.5 rounded-lg border bg-[#03070f]/90 px-1 py-1 text-left transition",
+            pairAllowed ? "hover:-translate-y-0.5 hover:shadow-[0_8px_18px_rgba(14,116,144,0.16)]" : "cursor-not-allowed opacity-60"
           )}
           style={{
-            borderColor: withAlpha(ringColor, 0.45),
-            boxShadow: `${isSelected ? "0 8px 22px rgba(59,130,246,0.3)" : "0 8px 22px rgba(15,23,42,0.45)"}, inset 0 0 0 1px ${withAlpha(
-              ringColor,
-              0.2
-            )}`,
+            borderColor: withAlpha(ringColor, 0.55),
+            boxShadow: isSelected
+              ? `0 0 0 2px ${withAlpha("#38bdf8", 0.65)}, inset 0 0 0 1px ${withAlpha(ringColor, 0.35)}`
+              : `inset 0 0 0 1px ${withAlpha(ringColor, 0.22)}`,
           }}
-          title={`${base}/${quote}`}
         >
-          <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.28em] text-emerald-100/80">
-            <span className="font-mono text-[10px] tracking-[0.28em] text-emerald-50">{`${base}/${quote}`}</span>
-            {idValue != null ? (
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-[1px] font-mono text-[10px] text-emerald-50">
-                {formatPercent(idValue, { precision: 2, fallback: "-" })}
-              </span>
-            ) : (
-              <span className="rounded-full border border-amber-400/40 bg-amber-400/15 px-2 py-[1px] text-[10px] text-amber-100">null</span>
-            )}
-          </div>
-          <div className="mt-1 flex flex-col gap-1">
-            <MetricButton
-              metric="mea"
-              value={meaValue}
-              presentation={meaPresentation}
-              disabled={!pairAllowed || meaValue == null}
-              idPercent={idValue}
-              onClick={() =>
-                onSelect?.({
-                  base,
-                  quote,
-                  value: meaValue,
-                  metric: "mea",
-                  assetId: `${base}/${quote}`,
-                })
-              }
+          <div className="flex items-center justify-center gap-1 text-[9px] uppercase tracking-[0.2em] text-slate-200">
+            <i
+              className="h-2 w-2 rounded-full"
+              style={{
+                background: ringColor,
+                boxShadow: `0 0 8px ${withAlpha(ringColor, 0.55)}`,
+              }}
             />
-            <MetricButton
-              metric="ref"
-              value={refValue}
-              presentation={refPresentation}
-              disabled={!pairAllowed || refValue == null}
-              onClick={() =>
-                onSelect?.({
-                  base,
-                  quote,
-                  value: refValue,
-                  metric: "ref",
-                  assetId: `${base}/${quote}`,
-                })
-              }
-            />
+            <span className="font-mono text-[10px] text-slate-200">
+              {base}/{quote}
+            </span>
           </div>
-        </div>
+          <div
+            className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
+            style={{
+              background: withAlpha(idColor, 0.9),
+              borderColor: withAlpha(ringColor, 0.2),
+              color: "#e2e8f0",
+            }}
+          >
+            {textForValue(idVal)}
+          </div>
+          <div
+            className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
+            style={{
+              background: mooBg,
+              borderColor: withAlpha(ringColor, 0.18),
+              color: mooVal == null || !Number.isFinite(mooVal) ? NULL_TEXT : "#02131f",
+            }}
+          >
+            {textForValue(mooVal)}
+          </div>
+        </button>
       </td>
     );
   };
@@ -309,53 +207,61 @@ export default function DynamicsMatrix(props: DynamicsMatrixProps) {
   return (
     <DynamicsCard
       title="Dynamics matrix"
-      subtitle="MOO & REF spreads"
+      subtitle="id_pct and moo_aux"
       status={status}
       className={classNames(
-        "rounded-[26px] border border-emerald-400/20 bg-[#02070e]/95 shadow-[0_20px_48px_rgba(0,0,0,0.5)] backdrop-blur",
+        "rounded-[22px] border border-emerald-400/20 bg-[#02070e]/95 shadow-[0_18px_42px_rgba(0,0,0,0.45)] backdrop-blur",
         className
       )}
       contentClassName="flex flex-col gap-4"
     >
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-emerald-50/80">
-        <span className="rounded-full border border-emerald-300/40 bg-emerald-300/10 px-2.5 py-[2px]">MOO values</span>
-        <span className="rounded-full border border-cyan-300/40 bg-cyan-300/10 px-2.5 py-[2px]">REF values</span>
-        <span className="rounded-full border border-emerald-400/50 px-2.5 py-[2px] text-emerald-50/80">
-          Green rings: direct preview
+      <div className="flex flex-wrap items-center gap-2 text-[10px] text-emerald-50/80">
+        <span className="rounded-full border border-emerald-300/40 bg-emerald-300/10 px-2 py-[2px]">id_pct header</span>
+        <span className="rounded-full border border-cyan-300/40 bg-cyan-300/10 px-2 py-[2px]">moo header</span>
+        <span className="rounded-full border border-emerald-400/50 px-2 py-[2px] text-emerald-50/80">
+          Green: preview
         </span>
-        <span className="rounded-full border border-rose-400/50 px-2.5 py-[2px] text-emerald-50/80">
-          Red rings: anti-symmetry
+        <span className="rounded-full border border-rose-400/50 px-2 py-[2px] text-emerald-50/80">
+          Red: anti-sym / payload
         </span>
-        <span className="rounded-full border border-slate-400/50 px-2.5 py-[2px] text-emerald-50/80">
-          Grey rings: bridged
+        <span className="rounded-full border border-slate-400/50 px-2 py-[2px] text-emerald-50/80">
+          Grey: bridged
         </span>
-        <span className="rounded-full border border-purple-400/60 px-2.5 py-[2px] text-emerald-50/80">
-          Purple rings: frozen
+        <span className="rounded-full border border-purple-400/60 px-2 py-[2px] text-emerald-50/80">
+          Purple: frozen
         </span>
-        <span className="rounded-full border border-amber-400/50 px-2.5 py-[2px] text-amber-100/90">Yellow: null</span>
+        <span className="rounded-full border border-amber-400/50 px-2 py-[2px] text-amber-100/90">Yellow: null</span>
       </div>
 
-      <div className="flex-1 rounded-[24px] border border-emerald-400/15 bg-[#01050b]/85 p-0.5 shadow-[inset_0_1px_0_rgba(94,234,212,0.15)]">
+      <div className="flex-1 rounded-[18px] border border-emerald-400/15 bg-[#01050b]/85 p-1 shadow-[inset_0_1px_0_rgba(94,234,212,0.15)] overflow-auto">
         {rows.length === 0 || cols.length === 0 ? (
           <div className="px-4 py-8 text-sm text-emerald-200/70">Matrix data unavailable.</div>
         ) : (
-          <div className="overflow-hidden rounded-[22px]">
-            <table className="w-full table-fixed border-separate border-spacing-0 text-[10px]">
+          <div className="overflow-x-auto rounded-[14px]">
+            <table className="w-full table-fixed border-separate border-spacing-0 text-[10px] leading-tight">
               <thead className="sticky top-0 z-10 bg-[#03101a]/95 text-emerald-50/70 backdrop-blur">
                 <tr>
                   <th
-                    className="px-3 py-2 text-left font-semibold uppercase tracking-[0.24em] text-emerald-50/80"
-                    style={{ width: rowHeaderWidth }}
+                    className="px-3 py-1.5 text-left font-semibold uppercase tracking-[0.2em] text-emerald-50/80"
+                    style={{ width: rowHeaderWidth, minWidth: rowHeaderWidth }}
                   >
-                    Base
+                    Base / headers
                   </th>
-                  {cols.map((coin) => (
+                  {cols.map((coin, idx) => (
                     <th
                       key={`head-${coin}`}
-                      className="px-1.5 py-2 text-right font-mono text-[10px] uppercase tracking-[0.2em] text-emerald-50/70"
+                      className="px-1 py-1.5 text-center font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-50/70"
                       style={{ width: cellWidth }}
                     >
-                      <span className="block truncate">{coin}</span>
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className="block truncate">{coin}</span>
+                        <span className="rounded-full bg-emerald-500/15 px-1.5 py-[1px] text-[9px] text-emerald-100/80">
+                          id_pct {textForValue(idPct?.[idx]?.[idx + 1] ?? null)}
+                        </span>
+                        <span className="rounded-full bg-cyan-500/15 px-1.5 py-[1px] text-[9px] text-cyan-100/80">
+                          moo {textForValue(mea?.[idx]?.[idx + 1] ?? null)}
+                        </span>
+                      </div>
                     </th>
                   ))}
                 </tr>
@@ -365,10 +271,18 @@ export default function DynamicsMatrix(props: DynamicsMatrixProps) {
                   <tr key={base}>
                     <th
                       scope="row"
-                      className="bg-[#03101a]/70 px-3 py-2 text-left font-semibold uppercase tracking-[0.3em] text-emerald-50"
-                      style={{ width: rowHeaderWidth }}
+                      className="bg-[#03101a]/70 px-3 py-1.5 text-left font-semibold uppercase tracking-[0.24em] text-emerald-50"
+                      style={{ width: rowHeaderWidth, minWidth: rowHeaderWidth }}
                     >
-                      {base}
+                      <div className="flex flex-col gap-1">
+                        <span>{base}</span>
+                        <span className="rounded-full bg-emerald-500/15 px-1.5 py-[1px] text-[9px] text-emerald-100/80">
+                          id_pct {textForValue(idPct?.[rowIdx]?.[rowIdx] ?? null)}
+                        </span>
+                        <span className="rounded-full bg-cyan-500/15 px-1.5 py-[1px] text-[9px] text-cyan-100/80">
+                          moo {textForValue(mea?.[rowIdx]?.[rowIdx] ?? null)}
+                        </span>
+                      </div>
                     </th>
                     {cols.map((_, colIdx) => renderCell(rowIdx, colIdx))}
                   </tr>

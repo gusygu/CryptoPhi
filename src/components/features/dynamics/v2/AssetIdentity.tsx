@@ -571,22 +571,22 @@ export default function AssetIdentity({
       subtitle={`${A || "-"} / ${B || "-"}`}
       status={statusLabel}
       className={classNames(
-        "rounded-[26px] border border-emerald-400/20 bg-[#030912]/90 shadow-[0_20px_40px_rgba(0,0,0,0.45)] backdrop-blur",
+        "rounded-[18px] border border-emerald-400/20 bg-[#030912]/90 shadow-[0_12px_28px_rgba(0,0,0,0.4)] backdrop-blur",
         className,
       )}
-      contentClassName="flex flex-col gap-5"
+      contentClassName="flex flex-col gap-3.5"
     >
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
-        <div className="flex flex-col gap-3 rounded-[22px] border border-emerald-400/25 bg-[#020a13]/85 p-3">
-          <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-100/70">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
+        <div className="flex flex-col gap-2 rounded-[14px] border border-emerald-400/25 bg-[#020a13]/85 p-2">
+          <div className="text-[11px] uppercase tracking-[0.32em] text-emerald-100/70">
             Wallet focus
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-0.5">
             {walletEntries.map(({ coin, balance }) => (
               <div
                 key={coin}
                 className={classNames(
-                  "group flex min-w-[96px] flex-col rounded-2xl border px-2.5 py-1.5 text-[10px]",
+                  "group flex min-w-[78px] flex-col rounded-lg border px-2 py-1 text-[10px]",
                   coin === A
                     ? "border-emerald-300/60 bg-emerald-300/10 text-emerald-50"
                     : coin === B
@@ -595,7 +595,7 @@ export default function AssetIdentity({
                 )}
               >
                 <span className="font-mono uppercase tracking-[0.3em]">{coin}</span>
-                <span className="font-mono text-sm tracking-tight text-emerald-50">
+                <span className="font-mono text-[12px] tracking-tight text-emerald-50">
                   {formatNumber(balance, { fallback: "-" })}
                 </span>
               </div>
@@ -604,10 +604,10 @@ export default function AssetIdentity({
 
           {inlineMetrics?.length ? (
             <div>
-              <div className="text-[10px] uppercase tracking-[0.35em] text-emerald-100/70">
+              <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-100/70">
                 Inline metrics
               </div>
-              <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div className="mt-2 grid gap-1 md:grid-cols-2">
                 {inlineMetrics.map((metric) => (
                   <InsightBadge key={metric.label} metric={metric} />
                 ))}
@@ -616,10 +616,10 @@ export default function AssetIdentity({
           ) : null}
         </div>
 
-        <div className="flex min-h-[140px] flex-col gap-3 rounded-[22px] border border-emerald-400/25 bg-[#010812]/85 p-3">
+        <div className="flex min-h-[110px] flex-col gap-2 rounded-[14px] border border-emerald-400/25 bg-[#010812]/85 p-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-300/70">
+              <div className="text-[11px] uppercase tracking-[0.3em] text-emerald-300/70">
                 Metric focus
               </div>
               <div className="text-sm text-emerald-200/75">
@@ -633,7 +633,7 @@ export default function AssetIdentity({
                   type="button"
                   onClick={() => setFocusKey(option.key)}
                   className={classNames(
-                    "rounded-full border px-3 py-0.5 text-[11px] font-semibold uppercase tracking-[0.3em] transition",
+                    "rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.26em] transition",
                     focusKey === option.key
                       ? "border-emerald-300/70 bg-emerald-300/20 text-emerald-50"
                       : "border-emerald-400/30 bg-transparent text-emerald-200/70 hover:border-emerald-300/50 hover:bg-emerald-300/10",
@@ -645,7 +645,7 @@ export default function AssetIdentity({
             </div>
           </div>
 
-          <div className="flex-1 rounded-[18px] border border-emerald-400/20 bg-[#020d18]/85 p-2.5">
+          <div className="flex-1 rounded-[12px] border border-emerald-400/20 bg-[#020d18]/85 p-1.5">
             {selectedOption ? (
               <div className="flex h-full flex-col">
                 <div className="flex items-center justify-between text-xs text-emerald-100/70">
@@ -654,7 +654,7 @@ export default function AssetIdentity({
                     {selectedOption.current}
                   </span>
                 </div>
-                <div className="mt-2 h-14">
+                <div className="mt-1.5 h-10">
                   <Sparkline
                     data={selectedOption.data}
                     color={selectedOption.color}
@@ -671,7 +671,7 @@ export default function AssetIdentity({
       </div>
 
       {primaryPairs.length ? (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-2.5 sm:grid-cols-2">
           {primaryPairs.map((pair) => {
             const metricsList: PairCardMetric[] = [
               {
@@ -730,7 +730,7 @@ export default function AssetIdentity({
       ) : null}
 
       {secondaryPairs.length ? (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-2.5 sm:grid-cols-2">
           {secondaryPairs.map((pair) => {
             const metricsList: PairCardMetric[] = [
               {

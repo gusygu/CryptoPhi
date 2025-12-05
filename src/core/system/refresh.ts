@@ -16,6 +16,7 @@ import {
 import type { MatrixGridObject, MatrixType } from "@/core/db/db";
 import { fetchOpeningGridFromView } from "@/core/features/matrices/opening";
 import { fetchSnapshotBenchmarkGrid } from "@/core/features/matrices/snapshot";
+import { getAppSessionId } from "@/core/system/appSession";
 
 export type RefreshStepResult = {
   name: string;
@@ -43,7 +44,7 @@ type RefreshOptions = {
 
 const KNOWN_QUOTES = ["USDT", "FDUSD", "USDC", "TUSD", "BUSD", "USD", "BTC", "ETH", "BNB"] as const;
 const REFRESH_WINDOW = process.env.MATRICES_REFRESH_WINDOW ?? "1h";
-const APP_SESSION_ID = process.env.APP_SESSION_ID ?? "system-refresh";
+const APP_SESSION_ID = getAppSessionId();
 
 export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<SystemRefreshResult> {
   const universeEntries = opts.symbols
@@ -116,8 +117,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
     }
 
     const tsMs = live.matrices.benchmark.ts;
-
-    await persistLiveMatricesSlice({
+    const openingMark = await persistLiveMatricesSlice({
       appSessionId: APP_SESSION_ID,
       coins: liveCoins,
       tsMs,
@@ -128,7 +128,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
 
     configureBenchmarkProviders({
       getPrev: (matrixType, base, quote, beforeTs) =>
-        getPrevValue(matrixType, base.toUpperCase(), quote.toUpperCase(), beforeTs),
+        getPrevValue(matrixType, base.toUpperCase(), quote.toUpperCase(), beforeTs, APP_SESSION_ID),
       fetchOpeningGrid: (coinsUniverse, nowTsParam) =>
         fetchOpeningGridFromView({
           coins: coinsUniverse,
@@ -155,6 +155,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.pct_drv,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
       appSessionId: APP_SESSION_ID,
@@ -163,6 +165,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.pct_ref,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
       appSessionId: APP_SESSION_ID,
@@ -171,6 +175,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.ref,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
       appSessionId: APP_SESSION_ID,
@@ -179,6 +185,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.delta,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
       appSessionId: APP_SESSION_ID,
@@ -187,6 +195,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.pct_snap,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
       appSessionId: APP_SESSION_ID,
@@ -195,6 +205,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       coins: liveCoins,
       grid: derived.snap,
       meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
     });
 
     return { coins: liveCoins.length, ts: tsMs };
@@ -279,6 +291,8 @@ async function persistDerivedGrid(opts: {
   coins: string[];
   grid: (number | null)[][];
   meta?: any;
+  openingStamp?: boolean;
+  openingTs?: number;
 }) {
   const values = gridToValues(opts.coins, opts.grid);
   await stageMatrixGrid({
@@ -288,6 +302,8 @@ async function persistDerivedGrid(opts: {
     coins: opts.coins,
     values,
     meta: opts.meta,
+    openingStamp: opts.openingStamp,
+    openingTs: opts.openingTs,
   });
   await commitMatrixGrid({
     appSessionId: opts.appSessionId,

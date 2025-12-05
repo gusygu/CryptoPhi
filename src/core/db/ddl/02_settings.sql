@@ -185,6 +185,87 @@ returns void language sql as $$
         unit   = excluded.unit;
 $$;
 
+-- Personal time settings (per app session/user), default 80s cycle
+create table if not exists personal_time_settings (
+  app_session_id   text primary key,
+  cycle_seconds    int    not null default 80,
+  sampling_seconds int,
+  window_seconds   int,
+  meta             jsonb  not null default '{}'::jsonb,
+  updated_at       timestamptz not null default now(),
+  constraint chk_cycle_seconds_positive check (cycle_seconds > 0),
+  constraint chk_sampling_seconds_positive check (sampling_seconds is null or sampling_seconds > 0),
+  constraint chk_window_seconds_positive check (window_seconds is null or window_seconds > 0)
+);
+
+create or replace function settings.sp_upsert_personal_time_setting(
+  _app_session_id   text,
+  _cycle_seconds    int,
+  _sampling_seconds int default null,
+  _window_seconds   int default null,
+  _meta             jsonb default '{}'::jsonb
+) returns void language sql as $$
+  insert into settings.personal_time_settings(app_session_id, cycle_seconds, sampling_seconds, window_seconds, meta, updated_at)
+  values(_app_session_id, greatest(1, _cycle_seconds), _sampling_seconds, _window_seconds, coalesce(_meta,'{}'::jsonb), now())
+  on conflict (app_session_id) do update
+    set cycle_seconds    = greatest(1, excluded.cycle_seconds),
+        sampling_seconds = excluded.sampling_seconds,
+        window_seconds   = excluded.window_seconds,
+        meta             = excluded.meta,
+        updated_at       = now();
+$$;
+
+-- RLS: rows are visible/writable only to matching session; global rows (NULL/'global') are readable by all
+alter table if exists settings.personal_time_settings enable row level security;
+
+do $$
+declare
+  pol_r text := 'personal_time_settings_r';
+  pol_w text := 'personal_time_settings_w';
+  tgt_read text := 'PUBLIC';
+  tgt_write text := 'PUBLIC';
+  cur_expr text := 'coalesce(current_setting(''app.current_session_id'', true), '''')';
+begin
+  if exists (select 1 from pg_roles where rolname = 'cp_reader')
+     and exists (select 1 from pg_roles where rolname = 'cp_app')
+     and exists (select 1 from pg_roles where rolname = 'cp_writer')
+     and exists (select 1 from pg_roles where rolname = 'cp_admin') then
+    tgt_read  := 'cp_reader, cp_app, cp_writer, cp_admin';
+    tgt_write := 'cp_app, cp_writer, cp_admin';
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'personal_time_settings' and policyname = pol_r
+  ) then
+    execute format(
+      'create policy %I on settings.personal_time_settings
+         for select
+         to %s
+         using (app_session_id is null or app_session_id = %s or app_session_id = %L)',
+      pol_r, tgt_read, cur_expr, 'global'
+    );
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'personal_time_settings' and policyname = pol_w
+  ) then
+    execute format(
+      'create policy %I on settings.personal_time_settings
+         for all
+         to %s
+         using (app_session_id is null or app_session_id = %s or app_session_id = %L)
+         with check (app_session_id is null or app_session_id = %s or app_session_id = %L)',
+      pol_w, tgt_write, cur_expr, 'global', cur_expr, 'global'
+    );
+  end if;
+end$$;
+
+insert into settings.personal_time_settings(app_session_id, cycle_seconds)
+values ('global', 80)
+on conflict (app_session_id) do nothing;
+
 
 -- B) PARAMS (engine knobs; detached from universe)
 create table if not exists params (
@@ -546,26 +627,43 @@ for each row execute function settings.trg_apply_universe_batch();
 drop trigger if exists t_profiles_u on profile;
 drop trigger if exists t_profile_u on profile;
 
--- Ensure every market symbol has a coin_universe entry
-create or replace function settings.sync_coin_universe(
+-- Ensure every market symbol has a coin_universe entry (guarded when market data exists)
+CREATE OR REPLACE FUNCTION settings.sync_coin_universe(
   _enable_new boolean default true,
   _only_quote text default 'USDT'
 ) returns int
-language sql as $$
-  with src as (
-    select ms.symbol
-    from market.symbols ms
-    where (_only_quote is null or right(ms.symbol, length(_only_quote)) = _only_quote)
-  ),
-  ins as (
-    insert into settings.coin_universe(symbol, enabled)
-    select s.symbol, _enable_new
-      from src s
- left join settings.coin_universe cu using(symbol)
-     where cu.symbol is null
-    returning 1
-  )
-  select count(*)::int from ins;
+language plpgsql as $$
+declare
+  ins_count int := 0;
+  dynamic_sql text := $sql$
+    WITH src AS (
+      SELECT ms.symbol
+      FROM market.symbols ms
+      WHERE ($2 IS NULL OR right(ms.symbol, length($2)) = $2)
+    ),
+    ins AS (
+      INSERT INTO settings.coin_universe(symbol, enabled)
+      SELECT s.symbol, $1
+        FROM src s
+   LEFT JOIN settings.coin_universe cu USING(symbol)
+       WHERE cu.symbol IS NULL
+      RETURNING 1
+    )
+    SELECT count(*)::int FROM ins;
+  $sql$;
+begin
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'market'
+      AND table_name = 'symbols'
+  ) THEN
+    EXECUTE dynamic_sql INTO ins_count USING _enable_new, _only_quote;
+  ELSE
+    ins_count := 0;
+  END IF;
+  RETURN ins_count;
+end;
 $$;
 
 -- Referential view the rest of the system reads from

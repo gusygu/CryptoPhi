@@ -2,7 +2,7 @@ BEGIN;
 -- Runtime trade ledger (BIGINT session lineage per prior strategy_aux)
 CREATE TABLE IF NOT EXISTS cin_aux.rt_session (
   session_id    BIGSERIAL PRIMARY KEY,
-  owner_user_id uuid REFERENCES auth."user"(user_id),
+  owner_user_id uuid,
   window_label  TEXT NOT NULL DEFAULT '1h',
   started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at      TIMESTAMPTZ,
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS cin_aux.rt_session (
 );
 
 ALTER TABLE cin_aux.rt_session
-  ADD COLUMN IF NOT EXISTS owner_user_id uuid REFERENCES auth."user"(user_id);
+  ADD COLUMN IF NOT EXISTS owner_user_id uuid;
 
 CREATE TABLE IF NOT EXISTS cin_aux.rt_balance (
   session_id        BIGINT NOT NULL REFERENCES cin_aux.rt_session(session_id) ON DELETE CASCADE,

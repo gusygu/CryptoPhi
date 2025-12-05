@@ -385,11 +385,15 @@ WHERE k.window_label = '1m'
 
 CREATE TABLE IF NOT EXISTS matrices.dyn_values (
   ts_ms        bigint           NOT NULL,
-  matrix_type  text             NOT NULL CHECK (matrix_type IN ('benchmark','delta','pct24h','id_pct','pct_drv','ref','pct_ref')),
+  matrix_type  text             NOT NULL CHECK (matrix_type IN ('benchmark','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap')),
   base         text             NOT NULL,
   quote        text             NOT NULL,
   value        double precision NOT NULL,
   meta         jsonb            NOT NULL DEFAULT '{}'::jsonb,
+  opening_stamp  boolean        NOT NULL DEFAULT false,
+  opening_ts     timestamptz,
+  snapshot_stamp boolean        NOT NULL DEFAULT false,
+  snapshot_ts    timestamptz,
   created_at   timestamptz      NOT NULL DEFAULT now(),
   PRIMARY KEY (ts_ms, matrix_type, base, quote)
 );
@@ -405,12 +409,64 @@ CREATE TABLE IF NOT EXISTS matrices.dyn_values_stage (
   value         double precision NOT NULL,
   meta          jsonb            NOT NULL DEFAULT '{}'::jsonb,
   app_session_id text,
+  opening_stamp  boolean          NOT NULL DEFAULT false,
+  opening_ts     timestamptz,
+  snapshot_stamp boolean          NOT NULL DEFAULT false,
+  snapshot_ts    timestamptz,
   created_at    timestamptz      NOT NULL DEFAULT now(),
   PRIMARY KEY (ts_ms, matrix_type, base, quote)
 );
 
 CREATE OR REPLACE VIEW public.dyn_matrix_values AS
 SELECT * FROM matrices.dyn_values;
+
+-- Ensure legacy deployments pick up new columns/checks/indexes
+DO $$
+BEGIN
+  IF to_regclass('matrices.dyn_values') IS NOT NULL THEN
+    -- add missing stamp columns
+    ALTER TABLE matrices.dyn_values
+      ADD COLUMN IF NOT EXISTS opening_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS opening_ts timestamptz,
+      ADD COLUMN IF NOT EXISTS snapshot_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS snapshot_ts timestamptz;
+    -- refresh matrix_type check to include pct_snap/snap
+    IF EXISTS (
+      SELECT 1 FROM information_schema.table_constraints
+      WHERE table_schema='matrices' AND table_name='dyn_values' AND constraint_type='CHECK'
+        AND constraint_name like '%matrix_type%'
+    ) THEN
+      ALTER TABLE matrices.dyn_values DROP CONSTRAINT IF EXISTS dyn_values_matrix_type_check;
+    END IF;
+    ALTER TABLE matrices.dyn_values
+      ADD CONSTRAINT dyn_values_matrix_type_check
+        CHECK (matrix_type IN ('benchmark','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap'));
+    -- stamp constraints
+    ALTER TABLE matrices.dyn_values
+      DROP CONSTRAINT IF EXISTS chk_dyn_values_opening_ts;
+    ALTER TABLE matrices.dyn_values
+      ADD CONSTRAINT chk_dyn_values_opening_ts CHECK (opening_stamp = false OR opening_ts IS NOT NULL);
+    ALTER TABLE matrices.dyn_values
+      DROP CONSTRAINT IF EXISTS chk_dyn_values_snapshot_ts;
+    ALTER TABLE matrices.dyn_values
+      ADD CONSTRAINT chk_dyn_values_snapshot_ts CHECK (snapshot_stamp = false OR snapshot_ts IS NOT NULL);
+    -- helpful indexes
+    CREATE INDEX IF NOT EXISTS ix_dyn_values_opening
+      ON matrices.dyn_values (matrix_type, opening_stamp, ts_ms DESC);
+    CREATE INDEX IF NOT EXISTS ix_dyn_values_session
+      ON matrices.dyn_values ((coalesce(meta->>'app_session_id','global')), ts_ms DESC);
+  END IF;
+
+  IF to_regclass('matrices.dyn_values_stage') IS NOT NULL THEN
+    ALTER TABLE matrices.dyn_values_stage
+      ADD COLUMN IF NOT EXISTS opening_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS opening_ts timestamptz,
+      ADD COLUMN IF NOT EXISTS snapshot_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS snapshot_ts timestamptz;
+    CREATE INDEX IF NOT EXISTS ix_dyn_stage_session
+      ON matrices.dyn_values_stage (coalesce(app_session_id,'global'), ts_ms DESC);
+  END IF;
+END$$;
 
 -- SCHEMA ----------------------------------------------------------------------
 create schema if not exists ops;

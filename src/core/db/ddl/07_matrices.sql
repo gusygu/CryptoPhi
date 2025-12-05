@@ -1,7 +1,66 @@
 -- 07_matrices.sql
 set search_path = matrices, public;
 
--- A) SERIES
+/* -------------------------------------------------------------------------- */
+/* A) Canonical dynamic matrices tables (stage + main)                        */
+/* -------------------------------------------------------------------------- */
+
+-- Main values table (one row per matrix cell per cycle)
+create table if not exists dyn_values (
+  ts_ms          bigint           not null, -- cycle timestamp (ms)
+  matrix_type    text             not null check (matrix_type in ('benchmark','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap')),
+  base           text             not null,
+  quote          text             not null,
+  value          double precision not null,
+  meta           jsonb            not null default '{}'::jsonb,
+  opening_stamp  boolean          not null default false,
+  opening_ts     timestamptz,
+  snapshot_stamp boolean          not null default false,
+  snapshot_ts    timestamptz,
+  created_at     timestamptz      not null default now(),
+  primary key (ts_ms, matrix_type, base, quote),
+  constraint chk_dyn_values_opening_ts check (opening_stamp = false or opening_ts is not null),
+  constraint chk_dyn_values_snapshot_ts check (snapshot_stamp = false or snapshot_ts is not null)
+);
+
+create index if not exists ix_dyn_values_pair_desc
+  on dyn_values (matrix_type, base, quote, ts_ms desc);
+create index if not exists ix_dyn_values_opening
+  on dyn_values (matrix_type, opening_stamp, ts_ms desc);
+create index if not exists ix_dyn_values_session
+  on dyn_values ((coalesce(meta->>'app_session_id','global')), ts_ms desc);
+
+-- Stage table (ingestion buffer; carries app_session_id explicitly)
+create table if not exists dyn_values_stage (
+  ts_ms          bigint           not null,
+  matrix_type    text             not null,
+  base           text             not null,
+  quote          text             not null,
+  value          double precision not null,
+  meta           jsonb            not null default '{}'::jsonb,
+  app_session_id text,
+  opening_stamp  boolean          not null default false,
+  opening_ts     timestamptz,
+  snapshot_stamp boolean          not null default false,
+  snapshot_ts    timestamptz,
+  created_at     timestamptz      not null default now(),
+  primary key (ts_ms, matrix_type, base, quote),
+  constraint chk_dyn_stage_opening_ts check (opening_stamp = false or opening_ts is not null),
+  constraint chk_dyn_stage_snapshot_ts check (snapshot_stamp = false or snapshot_ts is not null)
+);
+
+create index if not exists ix_dyn_stage_pair_desc
+  on dyn_values_stage (matrix_type, base, quote, ts_ms desc);
+create index if not exists ix_dyn_stage_session
+  on dyn_values_stage (coalesce(app_session_id,'global'), ts_ms desc);
+
+comment on table dyn_values is 'Authoritative dynamic matrices (one row per matrix cell per cycle, session-scoped via meta->>app_session_id).';
+comment on table dyn_values_stage is 'Stage/buffer for dynamic matrices before commit; app_session_id kept separate for clarity.';
+
+/* -------------------------------------------------------------------------- */
+/* B) Legacy series/points (kept for compatibility; minimally touched)       */
+/* -------------------------------------------------------------------------- */
+
 create table if not exists series (
   id         uuid primary key default gen_random_uuid(),
   key        text unique,
@@ -12,7 +71,6 @@ create table if not exists series (
   created_at timestamptz not null default now()
 );
 
--- B) POINTS
 create table if not exists points (
   series_id  uuid not null references matrices.series(id) on delete cascade,
   ts         timestamptz not null,
@@ -22,14 +80,12 @@ create table if not exists points (
 );
 create index if not exists ix_points_series_ts on points(series_id, ts desc);
 
--- C) VIEW: series + symbol (soft link via target->>'symbol')
 create or replace view v_series_symbol as
 select s.id, s.key, s.name, s.scope, s.unit,
        (s.target->>'symbol')::text as symbol,
        s.target
 from matrices.series s;
 
--- D) VIEW: latest point per series
 create or replace view v_latest_points as
 select p.series_id, (select key from matrices.series s where s.id = p.series_id) as series_key,
        p.ts, p.value, p.attrs
@@ -39,7 +95,6 @@ from (
   order by series_id, ts desc
 ) p;
 
--- E) HELPERS
 create or replace function sp_ensure_series(
   _key text,
   _name text default null,
@@ -97,12 +152,3 @@ begin
   end loop;
   return n;
 end$$;
-
--- 28_matrices_snapshot_metrics.sql (example file name)
-BEGIN;
-
-ALTER TABLE matrices.dyn_values
-  ADD COLUMN IF NOT EXISTS snap numeric,
-  ADD COLUMN IF NOT EXISTS pct_snap numeric;
-
-COMMIT;

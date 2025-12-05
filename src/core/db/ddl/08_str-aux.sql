@@ -745,11 +745,13 @@ end$$;
 -- optional seeds (safe no-ops if already there)
 insert into str_aux.symbol_specs(symbol, spec_label, windows)
 select 'BTCUSDT','default', array['1m','3m','5m','15m','1h']
-where not exists (select 1 from str_aux.symbol_specs where symbol='BTCUSDT');
+where exists (select 1 from market.symbols where symbol = 'BTCUSDT')
+  and not exists (select 1 from str_aux.symbol_specs where symbol='BTCUSDT');
 
 insert into str_aux.symbol_specs(symbol, spec_label, windows)
 select 'SOLUSDT','default', array['15m','30m','1h','3h']
-where not exists (select 1 from str_aux.symbol_specs where symbol='SOLUSDT');
+where exists (select 1 from market.symbols where symbol = 'SOLUSDT')
+  and not exists (select 1 from str_aux.symbol_specs where symbol='SOLUSDT');
 
 -- =============================================================================
 -- 8) SECURITY (RLS optional) & GRANTS

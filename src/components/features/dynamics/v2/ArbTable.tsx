@@ -95,9 +95,28 @@ function relativeLabel(value: ArbTableRow["updatedAt"]) {
   return `${days}d ago`;
 }
 
+function formatElapsed(changedAtIso?: string): string {
+  if (!changedAtIso) return "n/a";
+  const ts = Date.parse(changedAtIso);
+  if (!Number.isFinite(ts)) return "n/a";
+  const delta = Math.max(0, Date.now() - ts);
+  const secs = Math.floor(delta / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 function SwapBadge({ tag }: { tag?: SwapTag }) {
   if (!tag) {
-    return <span className="rounded-full border border-slate-600/40 px-2 py-[2px] text-[9px] uppercase tracking-[0.3em] text-slate-400">no swaps</span>;
+    return (
+      <span className="rounded-full border border-slate-600/40 px-2 py-[2px] text-[9px] uppercase tracking-[0.28em] text-slate-400">
+        no swaps
+      </span>
+    );
   }
   const tone =
     tag.direction === "up"
@@ -105,10 +124,13 @@ function SwapBadge({ tag }: { tag?: SwapTag }) {
       : tag.direction === "down"
       ? "border-orange-400/60 bg-orange-400/10 text-orange-100"
       : "border-slate-500/50 bg-slate-500/10 text-slate-200";
-  const label = tag.direction === "up" ? "UP" : tag.direction === "down" ? "DOWN" : "FLAT";
+  const arrow = tag.direction === "up" ? "▲" : tag.direction === "down" ? "▼" : "•";
+  const elapsed = formatElapsed(tag.changedAtIso);
   return (
-    <span className={classNames("rounded-full border px-2 py-[2px] text-[9px] uppercase tracking-[0.3em]", tone)}>
-      {label}
+    <span className={classNames("inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[9px] uppercase tracking-[0.28em]", tone)}>
+      <span className="font-bold">{arrow}</span>
+      <span>{tag.count ?? 0}</span>
+      <span className="text-[8px] opacity-80">{elapsed}</span>
     </span>
   );
 }
@@ -122,25 +144,29 @@ function EdgeCell({
 }) {
   const idValue = formatPercent(metrics?.idPct, {
     fallback: "-",
-    precision: 7,
-    minimumFractionDigits: 7,
+    precision: 5,
+    minimumFractionDigits: 5,
     sign: "always",
   });
-  const vtValue = formatNumber(metrics?.vTendency, { fallback: "-", precision: 3, sign: "always" });
   const mooValue = formatNumber(metrics?.moo, { fallback: "-", precision: 4 });
-  const refValue = formatNumber(metrics?.ref, { fallback: "-", precision: 7, minimumFractionDigits: 7 });
+  const refValue = formatNumber(metrics?.ref, { fallback: "-", precision: 6, minimumFractionDigits: 6 });
   return (
-    <div className="rounded-[20px] border border-emerald-400/20 bg-[#020b13]/80 p-3 text-left shadow-[0_12px_26px_rgba(0,0,0,0.45)]">
-      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.35em] text-emerald-100/70">
-        <span>{label}</span>
-        <SwapBadge tag={metrics?.swapTag} />
+    <div className="flex items-center justify-between rounded-[12px] border border-emerald-400/20 bg-[#020b13]/85 px-3 py-2 shadow-[0_10px_20px_rgba(0,0,0,0.35)]">
+      <div className="flex flex-col gap-1 text-left">
+        <div className="text-[9px] uppercase tracking-[0.24em] text-emerald-100/75">{label}</div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-[2px] font-mono text-[11px] text-emerald-50">
+            {idValue}
+          </span>
+          <span className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-[2px] font-mono text-[11px] text-cyan-50">
+            moo {mooValue}
+          </span>
+          <span className="rounded-md border border-sky-300/25 bg-sky-300/10 px-2 py-[2px] font-mono text-[11px] text-sky-50">
+            ref {refValue}
+          </span>
+        </div>
       </div>
-      <div className="mt-1 font-mono text-sm text-emerald-50">{idValue}</div>
-      <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-emerald-200/80">
-        <span>MOO {mooValue}</span>
-        <span className="text-right">REF {refValue}</span>
-      </div>
-      <div className="mt-1 text-[10px] text-emerald-200/70">vT {vtValue}</div>
+      <SwapBadge tag={metrics?.swapTag} />
     </div>
   );
 }
@@ -156,15 +182,17 @@ function StatusChips({
 }) {
   if (!direction && !inertia && vSwap == null) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-2 text-[10px] uppercase tracking-wide text-emerald-200/80">
+    <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-wide text-emerald-200/80">
       {direction ? (
-        <span className={classNames("rounded-full border px-2 py-[2px]", DIRECTION_TONE[direction])}>
+        <span className={classNames("rounded-full border px-2 py-[2px] text-[9px]", DIRECTION_TONE[direction])}>
           {DIRECTION_LABEL[direction]}
         </span>
       ) : null}
-      {inertia ? <span className="rounded-full border border-slate-600/40 px-2 py-[2px] text-slate-200/80">{INERTIA_LABEL[inertia]}</span> : null}
+      {inertia ? (
+        <span className="rounded-full border border-slate-600/40 px-2 py-[2px] text-[9px] text-slate-200/80">{INERTIA_LABEL[inertia]}</span>
+      ) : null}
       {vSwap != null ? (
-        <span className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-[2px] font-mono tracking-normal text-emerald-50">
+        <span className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-[2px] font-mono text-[10px] tracking-normal text-emerald-50">
           vSwap {formatNumber(vSwap, { precision: 3, fallback: "-" })}
         </span>
       ) : null}
@@ -298,28 +326,28 @@ export default function ArbTable({
       status={statusLabel}
       actions={headerActions}
       className={classNames(
-        "rounded-[26px] border border-emerald-400/20 bg-[#030911]/95 shadow-[0_20px_48px_rgba(0,0,0,0.5)] backdrop-blur",
+        "rounded-[20px] border border-emerald-400/20 bg-[#030911]/95 shadow-[0_14px_34px_rgba(0,0,0,0.45)] backdrop-blur max-h-[800px]",
         className
       )}
-      contentClassName="flex flex-col gap-4"
+      contentClassName="flex flex-col gap-3"
     >
       {loading && !prepared.length ? (
         <LoadingSkeleton />
       ) : !sorted.length ? (
         <EmptyState loading={loading || refreshing} />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="flex max-h-[680px] flex-col gap-2.5 overflow-auto pr-1">
           {sorted.map((row) => (
             <button
               key={row.symbol}
               type="button"
               onClick={() => onSelectRow?.(row.symbol)}
-              className="group flex flex-col gap-3 rounded-[30px] border border-emerald-400/25 bg-[#030b15]/85 p-4 text-left shadow-[0_18px_40px_rgba(0,0,0,0.55)] transition hover:border-emerald-300/40 hover:shadow-[0_22px_46px_rgba(0,0,0,0.65)]"
+              className="group flex flex-col gap-2 rounded-[14px] border border-emerald-400/25 bg-[#030b15]/85 p-3 text-left shadow-[0_12px_24px_rgba(0,0,0,0.4)] transition hover:border-emerald-300/40 hover:shadow-[0_14px_28px_rgba(0,0,0,0.5)]"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-lg uppercase tracking-[0.25em] text-emerald-50">{row.symbol}</span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-lg uppercase tracking-[0.2em] text-emerald-50">{row.symbol}</span>
                     {row.wallet != null ? (
                       <span className="rounded-full border border-emerald-300/40 bg-emerald-300/10 px-2 py-[2px] text-[10px] text-emerald-50">
                         {formatNumber(row.wallet, { fallback: "-", precision: 2 })}
@@ -328,20 +356,20 @@ export default function ArbTable({
                   </div>
                   <StatusChips direction={row.direction} inertia={row.inertia} vSwap={row.vSwap} />
                 </div>
-                <div className="text-right text-[10px] uppercase tracking-[0.35em] text-emerald-100/70">
+                <div className="text-right text-[10px] uppercase tracking-[0.28em] text-emerald-100/70">
                   <div>Spread</div>
-                  <div className="mt-1 font-mono text-lg text-emerald-50">
+                  <div className="mt-0.5 font-mono text-[15px] text-emerald-50">
                     {formatPercent(row.spread, {
                       fallback: "-",
-                      precision: 7,
-                      minimumFractionDigits: 7,
+                      precision: 5,
+                      minimumFractionDigits: 5,
                       sign: "always",
                     })}
                   </div>
                   <div className="mt-1 text-[10px] text-emerald-200/70">{relativeLabel(row.updatedAt)}</div>
                 </div>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-3">
                 {Object.keys(EDGE_INFO).map((key) => (
                   <EdgeCell key={`${row.symbol}-${key}`} label={edgeLabels[key as ArbEdgeKey]} metrics={row.edges?.[key as ArbEdgeKey]} />
                 ))}

@@ -16,6 +16,8 @@ import { Client } from "pg";
 
 /* ───────────────────────────── helpers ───────────────────────────── */
 
+console.log(">>> Using DATABASE_URL:", process.env.DATABASE_URL ?? "(not set)");
+
 function getFlag(name: string): string | undefined {
   const args = process.argv.slice(2);
   const prefix = `--${name}=`;
@@ -25,8 +27,17 @@ function getFlag(name: string): string | undefined {
   return prefixed ? prefixed.slice(prefix.length) : undefined;
 }
 
-/** Build pg client from .env or defaults */
+/** Build pg client.
+ *  Prefer DATABASE_URL (Neon / prod); fall back to PG* envs for local dev.
+ */
 function buildClient() {
+  const url = process.env.DATABASE_URL;
+  if (url && url.trim().length > 0) {
+    console.log("🔌 Connecting via DATABASE_URL");
+    return new Client({ connectionString: url });
+  }
+
+  // Fallback: local dev settings
   const cfg = {
     host: process.env.PGHOST || "localhost",
     port: +(process.env.PGPORT || 1026),
@@ -35,6 +46,10 @@ function buildClient() {
     database: process.env.PGDATABASE || "cryptopie",
     application_name: "cryptopi-ddl-runner",
   };
+  console.log(
+    "🔌 Connecting via PG* envs:",
+    `${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database}`
+  );
   return new Client(cfg);
 }
 
@@ -54,7 +69,8 @@ function listSqlFiles(dir: string): string[] {
 
 const FROM = getFlag("from");
 const ONLY = getFlag("only");
-const DRY_RUN = process.argv.includes("--dry-run") || process.env.DRY_RUN === "1";
+const DRY_RUN =
+  process.argv.includes("--dry-run") || process.env.DRY_RUN === "1";
 
 async function run() {
   const ddlDir = path.resolve("src/core/db/ddl");

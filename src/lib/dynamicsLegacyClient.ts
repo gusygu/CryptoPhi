@@ -109,7 +109,9 @@ export async function fetchStrAux(symbol: string, signal?: AbortSignal): Promise
 export function useCoinsUniverse(): Coins {
   const { settings } = useSettings() as any;
   const env = (process?.env?.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
-    .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
   return useMemo(
     () => (settings?.coinUniverse?.length ? settings.coinUniverse : env),
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { JetBrains_Mono } from "next/font/google";
 
 import HomeBar from "@/components/ui/HomeBar";
+import { SettingsProvider } from "@/lib/settings/provider";
 
 const num = JetBrains_Mono({
   subsets: ["latin"],
@@ -21,10 +22,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={num.variable}>
       <body className="antialiased bg-carbon-950 text-slate-100">
-        <div className="flex min-h-dvh flex-col md:flex-row">
-          <HomeBar className="md:w-72 md:flex-shrink-0" />
-          <main className="flex-1 w-full">{children}</main>
-        </div>
+        <SettingsProvider>
+          <div className="flex min-h-dvh flex-col md:flex-row">
+            <HomeBar className="md:w-72 md:flex-shrink-0" />
+            <main className="flex-1 w-full">{children}</main>
+          </div>
+        </SettingsProvider>
       </body>
     </html>
   );

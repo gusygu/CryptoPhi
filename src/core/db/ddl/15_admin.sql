@@ -6,6 +6,26 @@ BEGIN;
 -- Ensure admin schema exists before applying downstream objects.
 CREATE SCHEMA IF NOT EXISTS admin;
 
+CREATE TABLE IF NOT EXISTS market.wallet_balances (
+  asset   text NOT NULL,
+  ts      timestamptz NOT NULL,
+  free_amt numeric(38,18) NOT NULL,
+  locked_amt numeric(38,18) NOT NULL,
+  meta    jsonb NOT NULL DEFAULT '{}',
+  PRIMARY KEY (asset, ts)
+);
+
+CREATE OR REPLACE VIEW market.wallet_balances_latest AS
+SELECT DISTINCT ON (asset)
+       asset,
+       ts,
+       free_amt,
+       locked_amt,
+       (free_amt + locked_amt) AS total_amt,
+       meta
+FROM market.wallet_balances
+ORDER BY asset, ts DESC;
+
 -- ============================================================================
 -- Roles and hierarchy (from 15_roles.sql)
 -- ============================================================================
@@ -43,17 +63,17 @@ GRANT cp_app    TO cp_admin;
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cryptopill_api') THEN
-    CREATE ROLE cryptopill_api LOGIN PASSWORD 'replace_me' INHERIT;
+    CREATE ROLE cryptopill_api LOGIN PASSWORD 'ReplaceMe!2025A#' INHERIT;
   END IF;
   GRANT cp_app    TO cryptopill_api;
 
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cryptopill_jobs') THEN
-    CREATE ROLE cryptopill_jobs LOGIN PASSWORD 'replace_me' INHERIT;
+    CREATE ROLE cryptopill_jobs LOGIN PASSWORD 'ReplaceMe!2025A#' INHERIT;
   END IF;
   GRANT cp_writer TO cryptopill_jobs;
 
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cryptopill_read') THEN
-    CREATE ROLE cryptopill_read LOGIN PASSWORD 'replace_me' INHERIT;
+    CREATE ROLE cryptopill_read LOGIN PASSWORD 'ReplaceMe!2025A#' INHERIT;
   END IF;
   GRANT cp_reader TO cryptopill_read;
 END$$;

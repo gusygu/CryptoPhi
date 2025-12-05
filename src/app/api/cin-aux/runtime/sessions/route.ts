@@ -5,9 +5,15 @@ import { requireUserSession } from "@/app/(server)/auth/session";
 
 // GET: list sessions
 export async function GET() {
-  const session = await requireUserSession();
-  const sessions = await listRuntimeSessions(session.userId);
-  return NextResponse.json(sessions);
+  try {
+    const session = await requireUserSession();
+    const sessions = await listRuntimeSessions(session.userId);
+    return NextResponse.json(sessions);
+  } catch (err: any) {
+    console.error("[cin-aux] runtime sessions GET error:", err?.message ?? err);
+    // degrade gracefully: return empty list so client UI stays usable
+    return NextResponse.json([], { status: 200, headers: { "x-cin-aux-error": String(err?.message ?? err) } });
+  }
 }
 
 // POST: create session

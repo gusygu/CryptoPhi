@@ -16,6 +16,7 @@ import { fetchOpeningGridFromView } from "@/core/features/matrices/opening";
 import { fetchSnapshotBenchmarkGrid } from "@/core/features/matrices/snapshot";
 import { resolveCoinsFromSettings } from "@/lib/settings/server";
 import { fetchPairUniverseCoins } from "@/lib/settings/coin-universe";
+import { getAppSessionId } from "@/core/system/appSession";
 // typed downstream import from matrices frozen helpers (no runtime impact)
 import type {
   FrozenPairKey,
@@ -187,7 +188,8 @@ function parseQuery(req: Request): {
   const qCoins = parseCoinsCSV(url.searchParams.get("coins"));
   const quote = (url.searchParams.get("quote") || "USDT").toUpperCase();
   const window = ensureWindow(url.searchParams.get("window"));
-  const appSessionId = url.searchParams.get("appSessionId") || null;
+  const appSessionId =
+    url.searchParams.get("appSessionId") || getAppSessionId() || null;
   return { coins: qCoins, quote, window, appSessionId };
 }
 
@@ -246,8 +248,8 @@ export async function buildMatricesLatestPayload(
     const nowTs = live.matrices.benchmark.ts;
 
     const [prevBenchmarkRows, prevIdPctRows] = await Promise.all([
-      getPrevSnapshotByType("benchmark", nowTs, coins),
-      getPrevSnapshotByType("id_pct", nowTs, coins),
+      getPrevSnapshotByType("benchmark", nowTs, coins, appSessionId),
+      getPrevSnapshotByType("id_pct", nowTs, coins, appSessionId),
     ]);
 
     const prevBenchmarkMap = new Map<string, number>();
@@ -281,7 +283,8 @@ export async function buildMatricesLatestPayload(
           matrix_type,
           base.toUpperCase(),
           quoteSym.toUpperCase(),
-          beforeTs
+          beforeTs,
+          appSessionId
         );
       },
 

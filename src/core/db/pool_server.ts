@@ -1,5 +1,6 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { getServerRequestContext } from "@/lib/server/request-context";
+import { getAppSessionId, registerAppSessionBoot } from "@/core/system/appSession";
 
 /**
  * Unified PG pool + convenience helpers + lightweight ledgers.
@@ -38,6 +39,7 @@ const poolConfig = {
 const SESSION_STATEMENT_TIMEOUT = Number(process.env.DB_STATEMENT_TIMEOUT_MS ?? 15_000);
 const SESSION_IDLE_TX_TIMEOUT = Number(process.env.DB_IDLE_TX_TIMEOUT_MS ?? 15_000);
 const SESSION_TZ = String(process.env.DB_TIMEZONE ?? "UTC").replace(/'/g, "''");
+const SESSION_ID = getAppSessionId();
 export const DEFAULT_SEARCH_PATH = [
   "settings",
   "market",
@@ -63,6 +65,7 @@ type ContextAwareClient = PoolClient & { [CLIENT_CTX_PROP]?: string };
 function ensurePool(): Pool {
   if (!global.__core_pg_pool__) {
     const pool = new Pool(poolConfig as any);
+    void registerAppSessionBoot().catch(() => {});
     pool.on("connect", (client: PoolClient) => {
       const bootstrap = [
         `SET statement_timeout = ${SESSION_STATEMENT_TIMEOUT}`,
@@ -75,6 +78,11 @@ function ensurePool(): Pool {
           /* ignore bootstrap failures so the pool stays usable */
         });
       }
+      void client
+        .query("select set_config('app.current_session_id', $1, true)", [SESSION_ID])
+        .catch(() => {
+          /* if the GUC isn't defined yet we still keep the connection alive */
+        });
     });
     patchPoolQuery(pool);
     global.__core_pg_pool__ = pool;

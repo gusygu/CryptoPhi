@@ -55,25 +55,20 @@ const safeDiv = (num: number | null, den: number | null): number | null => {
 
 /** Reference block (pct_ref + ref) */
 export function computeRefBlock(args: {
-  benchmarkNew: number | null;  // bm_new
-  id_pct: number | null;        // decimal, e.g. 0.0123
-  refValue: number | null;      // bm_open
+  benchmarkNew: number | null;  // latest bm
+  id_pct: number | null;        // decimal, e.g. 0.0123 (latest)
+  refValue: number | null;      // opening bm
 }): { pct_ref: number | null; ref: number | null } {
   const { benchmarkNew, id_pct, refValue } = args;
 
-  // pct_ref = (bm_new - bm_open)/bm_open
-  const pct_ref = (refValue == null)
-    ? null
-    : safeDiv(
-        (benchmarkNew == null ? null : benchmarkNew - refValue),
-        refValue
-      );
-
-  // ref = (id_pct + 1) * pct_ref
-  const ref =
-    (pct_ref == null)
+  // pct_ref = (bm_open - bm_new)/bm_open  (opening vs latest)
+  const pct_ref =
+    refValue == null || benchmarkNew == null
       ? null
-      : ((id_pct == null ? 1 : (1 + id_pct)) * pct_ref);
+      : safeDiv(refValue - benchmarkNew, refValue);
+
+  // ref = pct_ref * id_pct (both latest)
+  const ref = pct_ref == null || id_pct == null ? null : pct_ref * id_pct;
 
   return { pct_ref, ref };
 }
@@ -101,11 +96,13 @@ export type ComputeOutput = {
  *  - opening(first-of-day/session) reference grid from DB (via opening.ts)
  *
  * Formulas:
- *  id_pct  = (bm_new - bm_prev)/bm_prev
- *  pct_drv = id_pct_new - id_pct_old
- *  pct_ref = (bm_new - bm_open)/bm_open
- *  ref     = (id_pct + 1) * pct_ref
- *  delta   = bm_new - bm_open * (1 + ref)
+ *  id_pct   = (bm_new - bm_prev)/bm_prev
+ *  pct_drv  = id_pct_new - id_pct_old
+ *  pct_ref  = (bm_open - bm_new)/bm_open
+ *  ref      = pct_ref * id_pct
+ *  delta    = bm_new - bm_open * (1 + ref)
+ *  pct_snap = (bm_snap - bm_new)/bm_snap
+ *  snap     = pct_snap * (1 + id_pct)
  */
 export async function computeFromDbAndLive(input: ComputeInput): Promise<ComputeOutput> {
   if (!PROV) throw new Error("Providers not configured. Call configureBenchmarkProviders(...) first.");
@@ -169,17 +166,14 @@ export async function computeFromDbAndLive(input: ComputeInput): Promise<Compute
 
       const snapVal = snapGrid?.[i]?.[j] ?? null;
       const pctSnap =
-        snapVal == null
+        snapVal == null || bmNow == null
           ? null
-          : safeDiv(
-              (bmNow == null ? null : snapVal - bmNow),
-              snapVal
-            );
+          : safeDiv(snapVal - bmNow, snapVal);
       pct_snap[i][j] = pctSnap;
       snap[i][j] =
-        pctSnap == null
+        pctSnap == null || idNow == null
           ? null
-          : ((idNow == null ? 1 : (1 + idNow)) * pctSnap);
+          : ((1 + idNow) * pctSnap);
     }
   }
 

@@ -67,5 +67,21 @@
     "vitest": "^2.1.9",
     "yargs": "^18.0.0",
     "zod": "^3.23.8"
-  }
+  },
+  "description": "**CryptoPi Dynamics** is an autonomous framework for quantitative analysis and orchestration of cryptocurrency market data.  \r It unifies ingestion, structural processing, and statistical synthesis across multiple dynamic modules.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gusygu/CryptoPhi.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/gusygu/CryptoPhi/issues"
+  },
+  "homepage": "https://github.com/gusygu/CryptoPhi#readme"
 }

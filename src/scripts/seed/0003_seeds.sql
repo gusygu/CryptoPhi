@@ -24,6 +24,12 @@ ON CONFLICT (id) DO UPDATE SET
   str_cycles_h3       = EXCLUDED.str_cycles_h3,
   updated_at          = now();
 
+INSERT INTO settings.personal_time_settings (app_session_id, cycle_seconds)
+VALUES ('global', 80)
+ON CONFLICT (app_session_id) DO UPDATE
+  SET cycle_seconds = EXCLUDED.cycle_seconds,
+      updated_at    = now();
+
 INSERT INTO settings.profile (id, nickname, timezone, language)
 VALUES (1, NULL, 'America/Sao_Paulo', 'en')
 ON CONFLICT (id) DO UPDATE SET

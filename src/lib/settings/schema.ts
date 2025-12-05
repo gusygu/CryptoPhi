@@ -38,7 +38,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   timing: {
     autoRefresh: true,
-    autoRefreshMs: 40_000,
+    autoRefreshMs: 80_000,
     secondaryEnabled: true,
     secondaryCycles: 3,
     strCycles: { m30: 45, h1: 90, h3: 270 },

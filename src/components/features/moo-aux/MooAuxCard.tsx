@@ -8,8 +8,9 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import Matrix, { type MatrixCell } from "legacy/lab/legacy/Matrix";
+import Matrix, { type MatrixCell } from "@/components/features/matrices/Matrix";
 import { withAlpha, COLOR_AMBER, NULL_SENSITIVITY } from "@/components/features/matrices/colors";
+import { useSettings } from "@/lib/settings/client";
 
 const FALLBACK_COINS: string[] = ["BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "PEPE", "USDT"];
 const CARD_GRADIENT =
@@ -72,12 +73,20 @@ function coinsEqual(a: string[], b: string[]): boolean {
 }
 
 export default function MooAuxCard({
-  coins = FALLBACK_COINS,
+  coins,
   defaultK = 7,
   autoRefreshMs = 45_000,
   className = "",
 }: Props) {
-  const normalizedCoins = useMemo(() => sanitizeCoins(coins, FALLBACK_COINS), [coins]);
+  const { data: settings } = useSettings();
+  const settingsCoins = useMemo(
+    () => sanitizeCoins(settings?.coinUniverse ?? [], FALLBACK_COINS),
+    [settings?.coinUniverse?.join("|")]
+  );
+  const normalizedCoins = useMemo(
+    () => sanitizeCoins(coins ?? settingsCoins, settingsCoins),
+    [coins, settingsCoins]
+  );
   const [coinUniverse, setCoinUniverse] = useState<string[]>(normalizedCoins);
   const [cells, setCells] = useState<MatrixCell[][]>(() =>
     buildMatrixCells(normalizedCoins, {}, {}, {}, defaultK, null)

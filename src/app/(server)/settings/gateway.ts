@@ -1,5 +1,6 @@
 // src/server/settings/gateway.ts
 import { z } from "zod";
+import { getAll as getSettings } from "@/lib/settings/server";
 
 // Keep this in sync with your Settings page schema
 export const SettingsSchema = z.object({
@@ -7,7 +8,7 @@ export const SettingsSchema = z.object({
   quote: z.string().default("USDT"),           // default quote
   timing: z.object({
     autoRefresh: z.boolean().default(true),
-    autoRefreshMs: z.number().default(45_000),
+    autoRefreshMs: z.number().default(80_000),
     secondaryEnabled: z.boolean().default(true),
     secondaryCycles: z.number().default(3),
     strCycles: z.object({ m30: z.number(), h1: z.number(), h3: z.number() })
@@ -19,17 +20,23 @@ let version = 0;
 
 // TODO: plug into your real persistence (db/file). For now, import from the Settings page's server util.
 export async function loadSettings(): Promise<z.infer<typeof SettingsSchema>> {
-  // import { getAll } from "@/app/settings/server"; // if you already have it
-  // const raw = await getAll();
-  // return SettingsSchema.parse(raw);
-
-  // temporary fallback to avoid breaks
-  if (!current) current = SettingsSchema.parse({
-    universe: ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","DOGE","USDT"],
-    quote: "USDT",
-    timing: { autoRefresh: true, autoRefreshMs: 45_000, secondaryEnabled: true, secondaryCycles: 3,
-      strCycles: { m30: 60, h1: 60, h3: 60 } }
-  });
+  if (!current) {
+    try {
+      const raw = await getSettings();
+      current = SettingsSchema.parse({
+        universe: raw.coinUniverse ?? [],
+        quote: "USDT",
+        timing: raw.timing,
+      });
+    } catch {
+      current = SettingsSchema.parse({
+        universe: ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","DOGE","USDT"],
+        quote: "USDT",
+        timing: { autoRefresh: true, autoRefreshMs: 80_000, secondaryEnabled: true, secondaryCycles: 3,
+          strCycles: { m30: 60, h1: 60, h3: 60 } }
+      });
+    }
+  }
   return current!;
 }
 

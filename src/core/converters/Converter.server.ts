@@ -100,6 +100,34 @@ function recordToGrid(coins: string[], rec: Record<string, Record<string, number
   return out;
 }
 
+function projectGrid(
+  sourceCoins: string[],
+  sourceGrid: number[][] | undefined | null,
+  targetCoins: string[]
+): number[][] | undefined {
+  if (!sourceGrid || !sourceCoins.length || !targetCoins.length) return undefined;
+  const index = new Map<string, number>();
+  sourceCoins.forEach((c, idx) => {
+    const upper = ensureUpper(c);
+    if (upper && !index.has(upper)) index.set(upper, idx);
+  });
+  const out: number[][] = Array.from({ length: targetCoins.length }, () =>
+    Array.from({ length: targetCoins.length }, () => 0)
+  );
+  for (let i = 0; i < targetCoins.length; i++) {
+    const fromIdx = index.get(targetCoins[i]!);
+    if (fromIdx == null) continue;
+    for (let j = 0; j < targetCoins.length; j++) {
+      if (i === j) continue;
+      const toIdx = index.get(targetCoins[j]!);
+      if (toIdx == null) continue;
+      const raw = sourceGrid?.[fromIdx]?.[toIdx];
+      out[i][j] = Number.isFinite(Number(raw)) ? Number(raw) : 0;
+    }
+  }
+  return out;
+}
+
 function swapTagFromDerivatives(series: number[] | undefined): SwapTag {
   if (!series || series.length === 0) return { count: 0, direction: "frozen" };
   let prev = 0;
@@ -129,31 +157,32 @@ async function resolveMatrices(
   const snapshot = await tryCall(() =>
     sources.matrices.getSnapshot?.({ coins, keys: ["benchmark", "id_pct", "pct_drv", "ref"] })
   );
-  let orderedCoins = snapshot?.coins?.map(ensureUpper) ?? coins.slice();
-  if (!orderedCoins.length) orderedCoins = coins.slice();
+  const targetCoins = coins.map(ensureUpper);
+  const snapshotCoins = snapshot?.coins?.map(ensureUpper).filter(Boolean) ?? [];
+  const sourceCoins = snapshotCoins.length ? snapshotCoins : targetCoins;
 
-  let benchmark = normalizeGrid(orderedCoins, snapshot?.grids?.benchmark);
+  let benchmark = projectGrid(sourceCoins, snapshot?.grids?.benchmark, targetCoins);
   if (!benchmark) {
-    const fallback = await tryCall(() => sources.matrices.getBenchmarkGrid(orderedCoins));
-    benchmark = normalizeGrid(orderedCoins, fallback);
+    const fallback = await tryCall(() => sources.matrices.getBenchmarkGrid(targetCoins));
+    benchmark = normalizeGrid(targetCoins, fallback);
   }
 
-  let idPct = normalizeGrid(orderedCoins, snapshot?.grids?.id_pct);
+  let idPct = projectGrid(sourceCoins, snapshot?.grids?.id_pct, targetCoins);
   if (!idPct) {
-    const fallback = await tryCall(() => sources.matrices.getIdPctGrid(orderedCoins));
-    idPct = normalizeGrid(orderedCoins, fallback);
+    const fallback = await tryCall(() => sources.matrices.getIdPctGrid(targetCoins));
+    idPct = normalizeGrid(targetCoins, fallback);
   }
 
-  let pctDrv = normalizeGrid(orderedCoins, snapshot?.grids?.pct_drv);
+  let pctDrv = projectGrid(sourceCoins, snapshot?.grids?.pct_drv, targetCoins);
   if (!pctDrv && typeof sources.matrices.getPctDrvGrid === "function") {
-    const fallback = await tryCall(() => sources.matrices.getPctDrvGrid?.(orderedCoins));
-    pctDrv = normalizeGrid(orderedCoins, fallback);
+    const fallback = await tryCall(() => sources.matrices.getPctDrvGrid?.(targetCoins));
+    pctDrv = normalizeGrid(targetCoins, fallback);
   }
 
-  const ref = normalizeGrid(orderedCoins, snapshot?.grids?.ref);
+  const ref = projectGrid(sourceCoins, snapshot?.grids?.ref, targetCoins);
 
   return {
-    coins: orderedCoins,
+    coins: targetCoins,
     benchmark,
     id_pct: idPct,
     pct_drv: pctDrv,

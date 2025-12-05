@@ -1,14 +1,13 @@
 "use client";
 
-"use client";
-
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AssetIdentity from "@/components/features/dynamics/v2/AssetIdentity";
 import ArbTable, { type ArbTableRow } from "@/components/features/dynamics/v2/ArbTable";
 import AuxiliaryCard from "@/components/features/dynamics/v2/AuxiliaryCard";
 import DynamicsMatrix from "@/components/features/dynamics/v2/DynamicsMatrix";
 import { formatNumber } from "@/components/features/dynamics/utils";
 import { loadPreviewSymbolSet } from "@/components/features/matrices/colouring";
+import { type FrozenStage } from "@/components/features/matrices/colors";
 import { useCoinsUniverse } from "@/lib/dynamicsLegacyClient";
 import { fromDynamicsSnapshot, useDynamicsSnapshot } from "@/core/converters/Converter.client";
 import type { DynamicsSnapshot } from "@/core/converters/provider.types";
@@ -309,6 +308,9 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 
         const normalizedSymbols = dedupeUpper(symbolsRaw);
 
+        const allowedSet = new Set(fallbackCoins.map(ensureUpper));
+        if (quote) allowedSet.add(quote);
+
         const normalizedPairs = normalizedSymbols
           .map((symbol) => {
             const sym = ensureUpper(symbol);
@@ -326,18 +328,25 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
           })
           .filter((entry): entry is { symbol: string; base: string; quote: string } => Boolean(entry));
 
+        const filteredPairs = normalizedPairs.filter(
+          (entry) => allowedSet.has(entry.base) && allowedSet.has(entry.quote)
+        );
+
         const coinSeeds = coinsRaw.length ? coinsRaw : fallbackCoins;
         const normalizedCoins = dedupeUpper([
           ...coinSeeds,
           quote,
-          ...normalizedPairs.flatMap((entry) => [entry.base, entry.quote]),
-        ]);
+        ]).filter((c) => allowedSet.has(c));
 
         if (!alive) return;
         setAvailability({
           coins: normalizedCoins.length ? normalizedCoins : (fallbackCoins.length ? fallbackCoins : ["BTC", "USDT"]),
-          symbols: normalizedSymbols,
-          pairs: normalizedPairs,
+          symbols: normalizedSymbols.filter((sym) => {
+            const s = ensureUpper(sym);
+            const pair = filteredPairs.find((p) => p.symbol === s);
+            return pair ? allowedSet.has(pair.base) && allowedSet.has(pair.quote) : allowedSet.has(s);
+          }),
+          pairs: filteredPairs,
           loading: false,
           error: null,
         });
@@ -477,7 +486,6 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     mea?: Grid;
     ref?: Grid;
     idPct?: Grid;
-    frozen?: boolean[][];
     timestamp?: number | null;
     symbols: string[];
   }>({
@@ -486,6 +494,9 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     coins: [],
     symbols: [],
   });
+  const freezeMapRef = useRef<Map<string, number>>(new Map());
+  const prevIdPctRef = useRef<Grid | null>(null);
+  const [freezeVersion, setFreezeVersion] = useState(0);
 
   const marketCoinsKey = useMemo(() => requestCoins.join("|"), [requestCoins]);
   const coinsKey = useMemo(() => coins.join("|"), [coins]);
@@ -530,13 +541,13 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
         const universeRaw = Array.isArray(matricesJson.meta?.universe)
           ? (matricesJson.meta!.universe as string[])
           : [];
+        const allowedMatrixCoins = new Set(requestCoins.map(ensureUpper));
         const universeCoins = universeRaw.length
-          ? universeRaw.map((coin) => ensureUpper(coin)).filter(Boolean)
-          : requestCoins;
+          ? universeRaw.map((coin) => ensureUpper(coin)).filter((c) => c && allowedMatrixCoins.has(c))
+          : [];
         const matrixCoins = dedupeUpper([
-          ...coins,
-          ...universeCoins,
           ...requestCoins,
+          ...universeCoins,
         ]);
 
         const benchmarkGrid = valuesToGrid(matrixCoins, matricesJson.matrices?.benchmark?.values);
@@ -544,7 +555,6 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
         const refGrid = valuesToGrid(matrixCoins, matricesJson.matrices?.ref?.values);
         const idPctGrid = valuesToGrid(matrixCoins, matricesJson.matrices?.id_pct?.values);
         const meaGrid = valuesToGrid(matrixCoins, mooJson.grid ?? {});
-        const frozenGrid = (matricesJson.matrices?.benchmark?.flags as any)?.frozen as boolean[][] | undefined;
         const payloadSymbols = Array.isArray(matricesJson.symbols)
           ? matricesJson.symbols.map((sym) => ensureUpper(sym)).filter(Boolean)
           : [];
@@ -559,7 +569,6 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
           mea: meaGrid,
           ref: refGrid,
           idPct: idPctGrid,
-          frozen: frozenGrid,
           timestamp: matricesJson.ts ?? Date.now(),
           symbols: payloadSymbols,
         });
@@ -618,11 +627,47 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     () => mergeGrids(matrixCoins, marketMatrix.idPct, fallbackIdPctGrid),
     [matrixCoinsKey, marketMatrix.idPct, fallbackIdPctGrid]
   );
+
+  useEffect(() => {
+    if (!matrixIdPct || !matrixCoins.length) return;
+    const next = new Map<string, number>();
+    const prevGrid = prevIdPctRef.current;
+    const eps = 1e-10;
+
+    for (let i = 0; i < matrixCoins.length; i++) {
+      for (let j = 0; j < matrixCoins.length; j++) {
+        if (i === j) continue;
+        const base = matrixCoins[i]!;
+        const quote = matrixCoins[j]!;
+        const key = `${base}|${quote}`;
+        const val = matrixIdPct?.[i]?.[j];
+        if (val == null || !Number.isFinite(val)) continue;
+        const prevVal = prevGrid?.[i]?.[j];
+        const unchanged =
+          prevVal != null && Number.isFinite(prevVal) && Math.abs(Number(val) - Number(prevVal)) <= eps;
+        const streak = unchanged ? (freezeMapRef.current.get(key) ?? 0) + 1 : 0;
+        next.set(key, streak);
+      }
+    }
+
+    freezeMapRef.current = next;
+    prevIdPctRef.current = matrixIdPct;
+    setFreezeVersion((v) => v + 1);
+  }, [matrixIdPct, matrixCoins]);
+
+  const freezeStageFor = useCallback(
+    (base: string, quote: string): FrozenStage | null => {
+      const streak = freezeMapRef.current.get(`${ensureUpper(base)}|${ensureUpper(quote)}`) ?? 0;
+      if (streak >= 2) return "mid";
+      if (streak >= 1) return "recent";
+      return null;
+    },
+    [freezeVersion]
+  );
   const matrixPct24h = useMemo(
     () => mergeGrids(matrixCoins, marketMatrix.pct24h, undefined),
     [matrixCoinsKey, marketMatrix.pct24h]
   );
-  const matrixFrozen = marketMatrix.frozen;
   const matrixPayloadSymbols = marketMatrix.symbols;
   const matrixTimestamp = marketMatrix.timestamp ?? null;
   const matrixLoading = marketMatrix.loading;
@@ -653,7 +698,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
   );
 
   const handleSelectMatrixCell = useCallback(
-    ({ base, quote }: { base: string; quote: string }) => {
+    ({ base, quote }: { base: string; quote: string; metric?: string }) => {
       setSelected((prev) => {
         const next = normalizePair({ base, quote }, coins, fallbackPair);
         if (next.base === prev.base && next.quote === prev.quote) return prev;
@@ -677,7 +722,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 
   return (
     <div className="min-h-screen bg-[#020305] text-slate-100">
-      <main className="mx-auto flex w-full max-w-screen-2xl flex-col gap-8 px-6 py-8 lg:px-8 xl:px-12">
+      <main className="mx-auto flex w-full max-w-[1900px] flex-col gap-6 px-4 py-6 lg:px-6 xl:px-8">
         <header className="space-y-2">
           <p className="text-xs font-mono uppercase tracking-[0.35em] text-emerald-300/70">{pageStatus}</p>
           <h1 className="text-3xl font-semibold tracking-tight text-emerald-200">Dynamics dashboard</h1>
@@ -697,7 +742,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
           ) : null}
         </header>
 
-        <section className="grid gap-6 lg:grid-cols-[1.35fr_1.65fr] xl:grid-cols-[1.25fr_1.75fr]">
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,2fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(0,2.05fr)]">
           <AssetIdentity
             base={selected.base}
             quote={selected.quote}
@@ -716,7 +761,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
             allowedSymbols={allowedSymbolSet}
             onSelectCandidate={handleSelectCandidate}
             onSelectPair={handleSelectMatrixCell}
-            className="min-w-0"
+            className="min-w-0 max-w-[520px]"
           />
 
           <ArbTable
@@ -731,16 +776,15 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
           />
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,0.3fr)] xl:grid-cols-[minmax(0,0.72fr)_minmax(0,0.28fr)]">
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,0.62fr)_minmax(0,0.38fr)] xl:grid-cols-[minmax(0,0.64fr)_minmax(0,0.36fr)]">
           <DynamicsMatrix
             coins={matrixCoins}
-            mea={matrixMea}
-            ref={matrixRef}
             idPct={matrixIdPct}
-            frozenGrid={matrixFrozen}
-            allowedSymbols={allowedSymbolSet}
+            mea={matrixMea}
             previewSet={previewSymbolSet}
+            allowedSymbols={allowedSymbolSet}
             payloadSymbols={matrixPayloadSymbols}
+            freezeStageFor={freezeStageFor}
             selected={selected}
             lastUpdated={matrixTimestamp}
             loading={matrixLoading}

@@ -5,13 +5,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSettings } from "@/lib/settings/client";
-import {
-  getState,
-  requestRefresh,
-  setEnabled,
-  subscribe,
-  type PollerState,
-} from "@/lib/pollerClient";
+import { requestRefresh, setEnabled, subscribe } from "@/lib/pollerClient";
 import { getMuted, setMuted, subscribeMet } from "@/lib/metronome";
 import type { ReportLevel } from "@/lib/types";
 
@@ -43,6 +37,8 @@ const FEATURE_LINKS: NavLink[] = [
   { href: "/dynamics", label: "Dynamics" },
   { href: "/cin-aux", label: "Cin-Aux" },
   { href: "/str-aux", label: "Str-Aux" },
+  { href: "/invites", label: "Invites" },
+  { href: "/mgmt", label: "Mgmt" },
   { href: "/settings", label: "Settings" },
   { href: "/audit", label: "Audit" },
   { href: "/docs", label: "Docs" },
@@ -80,15 +76,6 @@ const API_ENDPOINTS = [
 function isRouteActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
-}
-
-function safeGetPollerState(): PollerState | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return getState();
-  } catch {
-    return null;
-  }
 }
 
 function safeGetMuted(): boolean {
@@ -146,9 +133,16 @@ export default function HomeBar({ className = "" }: { className?: string }) {
   const pathname = usePathname() || "/";
   const { data: settings } = useSettings();
 
+  const DEFAULT_CYCLE_MS = 80_000;
+  const cycleMs = Math.max(
+    1_000,
+    Number(settings?.timing?.autoRefreshMs ?? DEFAULT_CYCLE_MS)
+  );
+  const cycleSeconds = Math.max(1, Math.round(cycleMs / 1000));
+
   const [autoOn, setAutoOn] = useState(true);
-  const [remaining, setRemaining] = useState(40);
-  const [duration, setDuration] = useState(40);
+  const [remaining, setRemaining] = useState(cycleSeconds);
+  const [duration, setDuration] = useState(cycleSeconds);
   const [phase, setPhase] = useState(1);
   const [cyclesCompleted, setCyclesCompleted] = useState(0);
   const [metMute, setMetMuteState] = useState(true);
@@ -167,21 +161,13 @@ export default function HomeBar({ className = "" }: { className?: string }) {
   const [snapError, setSnapError] = useState<string | null>(null);
   const [lastSnapAt, setLastSnapAt] = useState<number | null>(null);
 
-  // Initial poller state sync
+  // Reset metronome to the current settings-driven cycle
   useEffect(() => {
-    const state = safeGetPollerState();
-    if (!state) return;
-    setAutoOn(state.enabled);
-    setDuration(state.dur40 ?? 40);
-    setRemaining(state.remaining40 ?? state.dur40 ?? 40);
-    setPhase(state.phase ?? 1);
-    setCyclesCompleted(state.cyclesCompleted ?? 0);
-  }, []);
-
-  const durationRef = useRef(duration);
-  useEffect(() => {
-    durationRef.current = duration;
-  }, [duration]);
+    setDuration(cycleSeconds);
+    setRemaining(cycleSeconds);
+    setPhase(1);
+    setCyclesCompleted(0);
+  }, [cycleSeconds]);
 
   const metMuteRef = useRef(metMute);
   useEffect(() => {
@@ -246,31 +232,35 @@ export default function HomeBar({ className = "" }: { className?: string }) {
     };
   }, []);
 
-  // Poller event subscription
+  // Metronome timer driven by settings.cycleSeconds (default 80s)
   useEffect(() => {
-    const unsub = subscribe((ev) => {
-      if (ev.type === "state") {
-        setAutoOn(ev.state.enabled);
-        setDuration(ev.state.dur40);
-        setRemaining(ev.state.remaining40);
-        setPhase(ev.state.phase);
-        setCyclesCompleted(ev.state.cyclesCompleted);
-      } else if (ev.type === "tick") {
-        setRemaining(ev.remaining40);
-        setPhase(ev.phase);
-      } else if (ev.type === "tick40") {
-        setPulse({ ts: Date.now(), mode: ev.isThird ? "double" : "single" });
-        playClick(ev.isThird ? 2 : 1);
-      } else if (ev.type === "refresh") {
-        setRemaining(durationRef.current);
-        setPulse({ ts: Date.now(), mode: "double" });
-        playClick(2);
+    if (!autoOn) return;
+
+    let endMs = Date.now() + cycleMs;
+    const tickEvery = Math.min(1_000, Math.max(250, Math.floor(cycleMs / 20)));
+    setRemaining(Math.round((endMs - Date.now()) / 1000));
+
+    const id = window.setInterval(() => {
+      const leftMs = endMs - Date.now();
+      if (leftMs <= 0) {
+        // Cycle complete
+        setCyclesCompleted((prev) => {
+          const next = prev + 1;
+          const isLoopEnd = next % 3 === 0;
+          setPulse({ ts: Date.now(), mode: isLoopEnd ? "double" : "single" });
+          playClick(isLoopEnd ? 2 : 1);
+          return next;
+        });
+        setPhase((prev) => (prev % 3) + 1);
+        endMs = Date.now() + cycleMs;
+        setRemaining(Math.round(cycleMs / 1000));
+      } else {
+        setRemaining(Math.max(0, Math.ceil(leftMs / 1000)));
       }
-    });
-    return () => {
-      unsub();
-    };
-  }, [playClick]);
+    }, tickEvery);
+
+    return () => window.clearInterval(id);
+  }, [autoOn, cycleMs, playClick]);
 
   // Metronome subscription
   useEffect(() => {
@@ -379,12 +369,7 @@ export default function HomeBar({ className = "" }: { className?: string }) {
 
   const countdownSec = autoOn ? Math.max(0, Math.round(remaining)) : null;
   const baseDuration = Math.max(1, Math.round(duration));
-  const settingsCycle = Math.max(
-    1,
-    Math.round(
-      (settings?.timing?.autoRefreshMs ?? baseDuration * 1000) / 1000
-    )
-  );
+  const settingsCycle = cycleSeconds;
   const progressPct =
     countdownSec != null
       ? Math.min(

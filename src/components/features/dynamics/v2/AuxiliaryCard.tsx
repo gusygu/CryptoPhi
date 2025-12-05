@@ -86,9 +86,9 @@ function formatRelative(value: AuxiliaryCardProps["lastUpdated"]) {
 
 function StatBadge({ label, value, hint }: StatBadgeProps) {
   return (
-    <div className="rounded-[20px] border border-emerald-400/25 bg-[#03121c]/80 px-4 py-3 text-right text-sm text-emerald-50/80 shadow-[0_15px_30px_rgba(0,0,0,0.45)]">
-      <div className="text-[10px] uppercase tracking-[0.35em] text-emerald-100/70">{label}</div>
-      <div className="mt-1 font-mono text-xl leading-tight text-emerald-50">{value}</div>
+    <div className="rounded-[16px] border border-emerald-400/25 bg-[#03121c]/80 px-3 py-2.5 text-right text-sm text-emerald-50/80 shadow-[0_12px_24px_rgba(0,0,0,0.4)]">
+      <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-100/70">{label}</div>
+      <div className="mt-1 font-mono text-lg leading-tight text-emerald-50">{value}</div>
       {hint ? <div className="mt-1 text-[10px] text-emerald-200/70">{hint}</div> : null}
     </div>
   );
@@ -96,9 +96,9 @@ function StatBadge({ label, value, hint }: StatBadgeProps) {
 
 function StrMetricItem({ label, value, hint }: StrMetricItemProps) {
   return (
-    <div className="rounded-[18px] border border-emerald-400/20 bg-[#020a12]/80 px-3 py-3 text-right shadow-[0_12px_26px_rgba(0,0,0,0.45)]">
-      <div className="text-[10px] uppercase tracking-[0.35em] text-emerald-100/70">{label}</div>
-      <div className="mt-1 font-mono text-[15px] leading-tight text-emerald-50">{value}</div>
+    <div className="rounded-[14px] border border-emerald-400/20 bg-[#020a12]/80 px-3 py-2.5 text-right shadow-[0_10px_22px_rgba(0,0,0,0.4)]">
+      <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-100/70">{label}</div>
+      <div className="mt-1 font-mono text-[14px] leading-tight text-emerald-50">{value}</div>
       {hint ? <div className="mt-1 text-[10px] text-emerald-200/70">{hint}</div> : null}
     </div>
   );
@@ -315,39 +315,35 @@ export default function AuxiliaryCard({
       subtitle={`${A} -> ${B}`}
       status={status}
       className={classNames(
-        "rounded-[26px] border border-emerald-400/20 bg-[#02060d]/95 shadow-[0_20px_48px_rgba(0,0,0,0.5)] backdrop-blur",
+        "rounded-[22px] border border-emerald-400/20 bg-[#02060d]/95 shadow-[0_14px_34px_rgba(0,0,0,0.45)] backdrop-blur",
         className
       )}
-      contentClassName="flex flex-col gap-5"
+      contentClassName="flex flex-col gap-4"
     >
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,0.65fr)_minmax(0,0.35fr)]">
-        <section className="rounded-[22px] border border-emerald-400/20 bg-[#030c15]/85 p-4 shadow-[0_14px_32px_rgba(0,0,0,0.45)]">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-100/70">MOO snapshot</div>
-              <div className="mt-2 text-xs uppercase tracking-[0.3em] text-emerald-200/70">Value</div>
-              <div className="mt-1 font-mono text-3xl leading-none text-emerald-50">{formattedMoo}</div>
-              <div className="mt-2 text-[10px] uppercase tracking-[0.3em] text-emerald-100/70">
-                Tier <span className="text-emerald-50">{formattedTier}</span>
-              </div>
-              <div className="mt-2 text-xs text-emerald-200/70">Focus {A}/{B}</div>
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.55fr)]">
+        <section className="rounded-[18px] border border-emerald-400/20 bg-[#030c15]/85 p-3 shadow-[0_12px_26px_rgba(0,0,0,0.4)]">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-[12px] border border-emerald-400/25 bg-emerald-400/10 px-2 py-2">
+              <div className="text-[10px] uppercase tracking-[0.28em] text-emerald-100/70">MOO</div>
+              <div className="font-mono text-lg text-emerald-50">{formattedMoo}</div>
+              <div className="font-mono text-[10px] text-emerald-200/80">Tier {formattedTier}</div>
             </div>
-            <div className="flex min-w-[200px] flex-1 flex-wrap justify-end gap-3">
-              <StatBadge label="Candidates" value={candidateCount} hint="Eligible STR pairs" />
-              <StatBadge label="Universe" value={universeCount} hint="Coins in scope" />
-              <StatBadge
-                label="Opening"
-                value={
-                  openingValue != null
-                    ? formatNumber(openingValue, { precision: 4, fallback: "-" })
-                    : "-"
-                }
-                hint="Benchmark snapshot"
-              />
+            <div className="rounded-[12px] border border-emerald-400/25 bg-emerald-400/10 px-2 py-2">
+              <div className="text-[10px] uppercase tracking-[0.28em] text-emerald-100/70">Candidates</div>
+              <div className="font-mono text-lg text-emerald-50">{candidateCount}</div>
+              <div className="font-mono text-[10px] text-emerald-200/80">{A}/{B}</div>
+            </div>
+            <div className="rounded-[12px] border border-emerald-400/25 bg-emerald-400/10 px-2 py-2">
+              <div className="text-[10px] uppercase tracking-[0.28em] text-emerald-100/70">Universe</div>
+              <div className="font-mono text-lg text-emerald-50">{universeCount}</div>
+              <div className="font-mono text-[10px] text-emerald-200/80">
+                Open {openingValue != null ? formatNumber(openingValue, { precision: 4, fallback: "-" }) : "-"}
+              </div>
             </div>
           </div>
-          <div className="mt-4 rounded-[20px] border border-emerald-400/25 bg-[#04101a]/80 p-3">
-            <div className="mb-2 text-[11px] uppercase tracking-[0.35em] text-emerald-100/80">STR-Aux metrics</div>
+
+          <div className="mt-3 rounded-[16px] border border-emerald-400/25 bg-[#04101a]/80 p-3">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.32em] text-emerald-100/80">STR-Aux metrics</div>
             {strState.error ? (
               <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-[11px] text-amber-200">
                 {strState.error}
@@ -357,15 +353,21 @@ export default function AuxiliaryCard({
                 {Array.from({ length: 6 }).map((_, idx) => (
                   <div
                     key={`str-skeleton-${idx}`}
-                    className="h-20 rounded-xl border border-emerald-500/25 bg-emerald-500/10 animate-pulse"
+                    className="h-16 rounded-xl border border-emerald-500/25 bg-emerald-500/10 animate-pulse"
                   />
                 ))}
               </div>
             ) : (
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                <StrMetricItem label="GFM" value={formattedGfm} hint="Absolute mode (price)" />
+              <div className="space-y-2">
+                <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-2 py-2 text-right">
+                  <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-100/80">GFM</div>
+                  <div className="font-mono text-[14px] text-emerald-50">{formattedGfm}</div>
+                </div>
                 {strMetricsList.map((item) => (
-                  <StrMetricItem key={item.label} label={item.label} value={item.value} hint={item.hint} />
+                  <div key={item.label} className="rounded-lg border border-emerald-400/20 bg-[#020a12]/80 px-2 py-2 text-right">
+                    <div className="text-[10px] uppercase tracking-[0.28em] text-emerald-100/75">{item.label}</div>
+                    <div className="font-mono text-[14px] text-emerald-50">{item.value}</div>
+                  </div>
                 ))}
               </div>
             )}
@@ -377,18 +379,18 @@ export default function AuxiliaryCard({
             <div className="mt-1 text-sm text-emerald-50">Updated {formatRelative(lastUpdated)}</div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <StatBadge label="GFM (abs)" value={formattedGfm} hint="Current str-aux mode" />
+            <StatBadge label="GFM (abs)" value={formattedGfm} hint={undefined} />
             <StatBadge
               label="Velocity"
               value={formatNumber(strMetric?.vTendency, { precision: 3, fallback: "-" })}
-              hint="Directional tendency"
+              hint={undefined}
             />
             <StatBadge
               label="Shift"
               value={formatNumber(strMetric?.shift, { precision: 3, fallback: "-" })}
-              hint="Shift composite"
+              hint={undefined}
             />
-            <StatBadge label="CIN tracked" value={derivedCinRows.length} hint="Coins with CIN stats" />
+            <StatBadge label="CIN tracked" value={derivedCinRows.length} hint={undefined} />
           </div>
         </section>
       </div>
@@ -396,7 +398,7 @@ export default function AuxiliaryCard({
       <div className="rounded-[22px] border border-emerald-400/25 bg-[#030c15]/85 p-4">
         <div className="mb-3 flex items-center justify-between">
           <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-100/80">CIN-Aux</div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/70">Session imprint & luggage</div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/70"></div>
         </div>
         {loading ? (
           <div className="space-y-2 text-[11px] text-emerald-200/50">
@@ -414,13 +416,11 @@ export default function AuxiliaryCard({
                 <div className="font-mono uppercase tracking-[0.3em]">{symbol}</div>
                 <div className="flex flex-1 items-center justify-end gap-3 text-right text-[10px]">
                   <div>
-                    <div className="text-emerald-200/70">Imprint</div>
                     <div className="font-mono text-sm text-emerald-50">
                       {formatNumber(stat.session.imprint, { precision: 3, fallback: "0" })}
                     </div>
                   </div>
                   <div>
-                    <div className="text-emerald-200/70">Luggage</div>
                     <div className="font-mono text-sm text-emerald-50">
                       {formatNumber(stat.session.luggage, { precision: 3, fallback: "0" })}
                     </div>

@@ -47,7 +47,7 @@ BEGIN
     EXECUTE $v$ CREATE OR REPLACE VIEW debug.universe AS
       SELECT DISTINCT
              COALESCE(NULLIF(symbol::text,''),
-                      CASE WHEN base IS NOT NULL AND quote IS NOT NULL THEN base||quote END) AS symbol
+                      CASE WHEN base_asset IS NOT NULL AND quote_asset IS NOT NULL THEN base_asset||quote_asset END) AS symbol
       FROM settings.coin_universe
       WHERE COALESCE(enabled,true)=true $v$;
   ELSE

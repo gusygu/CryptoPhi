@@ -1,4 +1,3 @@
-import type { MatrixCell } from "legacy/lab/legacy/Matrix";
 import {
   COLOR_AMBER,
   COLOR_FROZEN,
@@ -10,6 +9,8 @@ import {
 import { getPreviewSymbols, type PreviewSource } from "@/lib/preview";
 // frozen helpers (type-only downstream; no runtime import)
 import type { FrozenPairKey } from "@/core/features/matrices/matrices";
+
+type MatrixCell = { polarity: "positive" | "negative" | "neutral" };
 
 // re-export alias just to register usage in this module’s type surface
 export type __FrozenPairKey = FrozenPairKey;
