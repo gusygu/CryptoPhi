@@ -26,7 +26,8 @@ SELECT
   il.imprint_trace_sum_usdt,
   il.imprint_devref_sum_usdt,
   il.luggage_total_principal_usdt,
-  il.luggage_total_profit_usdt
+  il.luggage_total_profit_usdt,
+  s.owner_user_id
 FROM cin_aux.rt_session s
 LEFT JOIN cin_aux.rt_imprint_luggage il
   ON il.session_id = s.session_id;

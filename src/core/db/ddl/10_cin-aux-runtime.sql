@@ -12,6 +12,18 @@ CREATE TABLE IF NOT EXISTS cin_aux.rt_session (
 ALTER TABLE cin_aux.rt_session
   ADD COLUMN IF NOT EXISTS owner_user_id uuid;
 
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE cin_aux.rt_session
+      ALTER COLUMN owner_user_id SET NOT NULL;
+  EXCEPTION
+    WHEN others THEN
+      -- existing rows without owners can be backfilled later; skip constraint for now
+      NULL;
+  END;
+END$$;
+
 CREATE TABLE IF NOT EXISTS cin_aux.rt_balance (
   session_id        BIGINT NOT NULL REFERENCES cin_aux.rt_session(session_id) ON DELETE CASCADE,
   asset_id          TEXT   NOT NULL,

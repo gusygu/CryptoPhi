@@ -8,6 +8,11 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
 
   const { Client } = await import("pg");
+  const appRole = process.env.APP_ROLE ?? "web";
+  const samplerEnabled =
+    process.env.STR_SAMPLER_AUTOSTART === "true" ||
+    appRole === "worker" ||
+    process.env.NODE_ENV === "development";
 
   const client = new Client({
     connectionString: process.env.DATABASE_URL,
@@ -25,15 +30,19 @@ export async function register() {
     await client.end().catch(() => {});
   }
 
-  try {
-    startSamplingUniverseWatcher();
-  } catch (err) {
-    console.error("[instrumentation] failed to start sampler watcher:", err);
-  }
+  if (samplerEnabled) {
+    try {
+      startSamplingUniverseWatcher();
+    } catch (err) {
+      console.error("[instrumentation] failed to start sampler watcher:", err);
+    }
 
-  try {
-    startPersistenceLoop();
-  } catch (err) {
-    console.error("[instrumentation] failed to start sampler persistence:", err);
+    try {
+      startPersistenceLoop();
+    } catch (err) {
+      console.error("[instrumentation] failed to start sampler persistence:", err);
+    }
+  } else {
+    console.info("[instrumentation] sampler disabled for role:", appRole);
   }
 }
