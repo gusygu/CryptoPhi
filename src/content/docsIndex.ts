@@ -76,6 +76,15 @@ export const DOCS: DocMeta[] = [
     short: "Conceptual and technical framing for CryptoPhi.",
     order: 10,
   },
+  {
+    id: "readme-from-dev",
+    slug: "readme-from-dev",
+    title: "README from dev",
+    file: "README-from-dev.md",
+    category: "high-level",
+    short: "Intro note from the dev about the test launch and goals.",
+    order: 20,
+  },
 
   // -------------------------
   // B - Architecture / Modules
