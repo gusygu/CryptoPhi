@@ -142,6 +142,7 @@ async function syncAuthInviteToken(params: {
   expiresAt?: string | null;
 }) {
   const { inviteId, token, email, expiresAt } = params;
+  const rawToken = token.trim();
   const hashedToken = hashInviteToken(token);
   const normalizedEmail = normalizeEmail(email);
   const expires =
@@ -170,7 +171,7 @@ async function syncAuthInviteToken(params: {
           expires_at = EXCLUDED.expires_at
       WHERE auth.invite_token.status <> 'used'
     `,
-    [inviteId, normalizedEmail, hashedToken, expires]
+    [inviteId, normalizedEmail, rawToken, expires]
   );
 }
 

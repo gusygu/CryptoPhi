@@ -32,7 +32,7 @@ export function hashInviteToken(token: string): string {
   return createHash("sha256").update(normalizeToken(token)).digest("hex");
 }
 
-async function fetchInviteRowByToken(token: string) {
+async function fetchInviteRowByTokens(rawToken: string, hashedToken: string) {
   return sql`
     SELECT
       it.invite_id,
@@ -46,7 +46,7 @@ async function fetchInviteRowByToken(token: string) {
     FROM auth.invite_token it
     LEFT JOIN auth.invite_request ir
       ON ir.request_id = it.request_id
-    WHERE it.token = ${token}
+    WHERE it.token in (${rawToken}, ${hashedToken})
     LIMIT 1
   `;
 }
@@ -85,20 +85,8 @@ export async function getValidInviteByToken(
 
   const hashed = hashInviteToken(normalized);
 
-  let rows = await fetchInviteRowByToken(hashed);
+  let rows = await fetchInviteRowByTokens(normalized, hashed);
   let source: InviteSource = "token";
-
-  if (rows.length === 0) {
-    rows = await fetchInviteRowByToken(normalized);
-
-    if (rows.length > 0) {
-      await sql`
-        UPDATE auth.invite_token
-        SET token = ${hashed}
-        WHERE invite_id = ${rows[0].invite_id}
-      `;
-    }
-  }
 
   let inviteRow: any = rows[0];
 
