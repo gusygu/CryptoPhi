@@ -1,6 +1,6 @@
 // src/app/api/settings/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";                 // ✅ use cookies() here
+import { cookies } from "next/headers";
 import { getAll, serializeSettingsCookie } from "@/lib/settings/server";
 import { getCurrentSession } from "@/app/(server)/auth/session";
 import { query } from "@/core/db/pool_server";
@@ -26,7 +26,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(shared, { headers: NO_STORE });
   }
 
-  // ✅ this was the bug: use cookies() (request-scoped) to read the cookie value
   const jar = await cookies();
   const rawCookie = jar.get("appSettings")?.value ?? null;
 
@@ -46,42 +45,36 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function PUT(req: Request) {
+// Admin-only global universe update; regular users keep coins in their own cookie via POST.
+export async function PUT(req: NextRequest) {
   const session = await getCurrentSession();
-  if (!session?.isAdmin) {
-    return NextResponse.json({ ok: false, error: "Admin only" }, { status: 403 });
-  }
-
+  const isAdmin = !!session?.isAdmin;
   const body = await req.json();
-// inside PUT /api/settings
-const enable: string[] = Array.isArray(body.enable) ? body.enable : [];
-if (enable.length) {
-  await query(`select settings.sp_upsert_coin_universe($1::text[])`, [enable]);
-  await query(`select settings.sp_mirror_universe_to_market()`); // idempotent
-}
-
+  const enable: string[] = Array.isArray(body.enable) ? body.enable : [];
   const disable = Array.isArray(body.disable) ? body.disable : [];
 
-  // 1️⃣ Ensure market has the new ones
-  if (enable.length)
-    await query(`insert into market.symbols(symbol)
-                 select s from unnest($1::text[]) s
-                 on conflict do nothing`, [enable]);
+  if (isAdmin) {
+    if (enable.length) {
+      await query(`select settings.sp_upsert_coin_universe($1::text[])`, [enable]);
+      await query(`select settings.sp_mirror_universe_to_market()`); // idempotent
+    }
 
-  // 2️⃣ Upsert enable / disable in settings
-  if (enable.length)
-    await query(`insert into settings.coin_universe(symbol, enabled)
-                 select s, true from unnest($1::text[]) s
-                 on conflict (symbol) do update set enabled = true`, [enable]);
-  if (disable.length)
-    await query(`update settings.coin_universe
-                    set enabled = false
-                  where symbol = any($1::text[])`, [disable]);
+    if (enable.length)
+      await query(`insert into market.symbols(symbol)
+                   select s from unnest($1::text[]) s
+                   on conflict do nothing`, [enable]);
 
+    if (enable.length)
+      await query(`insert into settings.coin_universe(symbol, enabled)
+                   select s, true from unnest($1::text[]) s
+                   on conflict (symbol) do update set enabled = true`, [enable]);
+    if (disable.length)
+      await query(`update settings.coin_universe
+                      set enabled = false
+                    where symbol = any($1::text[])`, [disable]);
 
-                  
-  // 3️⃣ Auto-sync remaining market symbols
-  await query(`select settings.sync_coin_universe(true, 'USDT')`);
+    await query(`select settings.sync_coin_universe(true, 'USDT')`);
+  }
 
-  return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  return NextResponse.json({ ok: true });
 }
