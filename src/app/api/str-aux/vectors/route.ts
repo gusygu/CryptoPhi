@@ -93,6 +93,14 @@ type VectorComputationConfig = {
 
 async function persistVector(symbol: string, window: SamplingWindowKey, summary: VectorSummary, ts: number) {
   try {
+    // Ensure parent window row exists to satisfy FK; store a minimal placeholder if needed.
+    await query(
+      `INSERT INTO str_aux.windows (symbol, window_label, window_start, cycles_count)
+         VALUES ($1,$2, to_timestamp($3 / 1000.0), 0)
+         ON CONFLICT (symbol, window_label, window_start) DO NOTHING`,
+      [symbol, window, ts]
+    );
+
     await query(
       `INSERT INTO str_aux.window_vectors (symbol, window_label, window_start, vec, updated_at)
          VALUES ($1,$2, to_timestamp($3 / 1000.0), $4::jsonb, NOW())
