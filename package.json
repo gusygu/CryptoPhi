@@ -27,6 +27,7 @@
     "worker:sampler": "tsx src/scripts/jobs/str-aux-runner.ts",
     "db:auto-ingest": "tsx src/scripts/jobs/auto-ddl-ingest.mts",
     "smoke:settings:doctor": "node --import tsx --env-file=.env src/scripts/smokes/smoke-settings-doctor.mts",
+    "job:mail:loop": "node --import tsx --env-file=.env src/scripts/jobs/mail/run-mail-queue-loop.mts",
     "job:mat:snapshot": "node --import tsx --env-file=.env src/scripts/jobs/matrices-snapshot.mts",
     "job:str:runner": "tsx src/scripts/jobs/str-aux-runner.ts",
     "smoke:doctor:matrices": "node --import tsx --env-file=.env src/scripts/smokes/doctor-matrices-storage.mts",

@@ -1,5 +1,7 @@
 import { createHash } from "crypto";
 import { getPool } from "@/core/db/db";
+import { renderMailFromTemplate } from "@/core/features/mail/renderer";
+import { sendBrevoEmail } from "@/core/integrations/brevo";
 import type {
   AdminInviteLink,
   AdminInviteStats,
@@ -327,7 +329,12 @@ export async function sendAdminInviteEmail(input: {
     expiresAt: inviteRow.expires_at,
   });
 
-  await pool().query(
+  const payload = {
+    adminName: input.adminName,
+    inviteUrl,
+  };
+
+  const mailInsert = await pool().query<{ mail_id: string }>(
     `
     INSERT INTO comms.mail_queue (
       to_email,
@@ -352,6 +359,7 @@ export async function sendAdminInviteEmail(input: {
       NULL,
       now()
     )
+    RETURNING mail_id
     `,
     [
       normalizedTarget,
@@ -361,6 +369,46 @@ export async function sendAdminInviteEmail(input: {
       normalizedAdmin,
     ]
   );
+
+  const mailId = mailInsert.rows[0]?.mail_id;
+  if (mailId) {
+    try {
+      const { subject, htmlContent } = await renderMailFromTemplate({
+        templateKey: input.templateKey,
+        payload,
+      });
+
+      await sendBrevoEmail({
+        toEmail: normalizedTarget,
+        subject,
+        htmlContent,
+        templateKey: input.templateKey,
+      });
+
+      await pool().query(
+        `
+        UPDATE comms.mail_queue
+        SET status = 'sent',
+            sent_at = now(),
+            last_error = NULL,
+            updated_at = now()
+        WHERE mail_id = $1::uuid
+        `,
+        [mailId]
+      );
+    } catch (err) {
+      await pool().query(
+        `
+        UPDATE comms.mail_queue
+        SET last_error = $2::text,
+            updated_at = now()
+        WHERE mail_id = $1::uuid
+        `,
+        [mailId, String(err)]
+      );
+      // leave status as pending so the background worker can retry
+    }
+  }
 
   await logAdminAction({
     actionKind: "admin.invite.email",
