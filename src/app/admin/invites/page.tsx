@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import InvitesAdminClient from "./InvitesAdminClient";
 
 interface AdminInviteLink {
   invite_id: string;
@@ -132,14 +133,13 @@ function AdminInviteLinkBox() {
 
 export default function AdminInvitesPage() {
   return (
-    <main className="flex flex-col gap-4 px-4 py-6 text-sm text-zinc-100">
+    <div className="flex flex-col gap-6 text-sm text-zinc-100">
       <header className="flex flex-col gap-1">
-        <h1 className="text-base font-semibold tracking-wide text-zinc-50">
-          Admin Invite Tools
+        <h1 className="text-lg font-semibold tracking-wide text-zinc-50">
+          Admin invites
         </h1>
         <p className="text-xs text-zinc-400">
-          Generate invite links or hand off registrations directly to community
-          managers.
+          Generate invite links and review or approve incoming invite requests.
         </p>
       </header>
 
@@ -165,6 +165,8 @@ export default function AdminInvitesPage() {
           </ol>
         </section>
       </div>
-    </main>
+
+      <InvitesAdminClient />
+    </div>
   );
 }
