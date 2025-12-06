@@ -6,10 +6,22 @@ import {
 } from "@getbrevo/brevo";
 
 const apiKey = process.env.BREVO_API_KEY;
+const DEFAULT_FROM_EMAIL =
+  process.env.BREVO_FROM_DEFAULT || "cryptophi@cryptophi.xyz";
+const DEFAULT_FROM_NAME =
+  process.env.BREVO_FROM_NAME_DEFAULT || "CryptoPhi";
+const ADMIN_FROM_EMAIL =
+  process.env.BREVO_FROM_ADMIN || DEFAULT_FROM_EMAIL;
+const ADMIN_FROM_NAME =
+  process.env.BREVO_FROM_NAME_ADMIN || "CryptoPhi Admin";
+const MANAGER_FROM_EMAIL =
+  process.env.BREVO_FROM_MANAGER || DEFAULT_FROM_EMAIL;
+const MANAGER_FROM_NAME =
+  process.env.BREVO_FROM_NAME_MANAGER || "CryptoPhi";
 
 if (!apiKey) {
-  // Optional: throw or log – you don't want to run mail job without this
-  console.warn("BREVO_API_KEY is not set – mail worker will fail.");
+  // Optional: throw or log - you don't want to run mail job without this
+  console.warn("BREVO_API_KEY is not set - mail worker will fail.");
 }
 
 const transacApi = new TransactionalEmailsApi();
@@ -24,20 +36,20 @@ if (apiKey) {
 export function getSenderForTemplate(templateKey: string) {
   if (templateKey === "manager_invite") {
     return {
-      email: "no-reply@mail.cryptophi.xyz",
-      name: "CryptoPhi",
+      email: MANAGER_FROM_EMAIL,
+      name: MANAGER_FROM_NAME,
     };
   }
   if (templateKey.startsWith("admin_invite")) {
     return {
-      email: "cryptophi@mail.cryptophi.xyz",
-      name: "CryptoPhi Admin",
+      email: ADMIN_FROM_EMAIL,
+      name: ADMIN_FROM_NAME,
     };
   }
   // fallback
   return {
-    email: "no-reply@mail.cryptophi.xyz",
-    name: "CryptoPhi",
+    email: DEFAULT_FROM_EMAIL,
+    name: DEFAULT_FROM_NAME,
   };
 }
 
