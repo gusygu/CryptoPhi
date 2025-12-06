@@ -112,10 +112,17 @@ begin
 
   -- 3) heuristic by known quotes (prefer longer suffix first)
   begin
-    select array_agg(a.asset order by length(a.asset) desc) into qlist
-    from market.assets a
-    where upper(coalesce(a.kind,'QUOTE')) in ('QUOTE','FIAT','STABLE')
-       or a.asset in ('USDT','USDC','FDUSD','BUSD','TUSD','DAI','USD','BRL','BTC','ETH','BNB');
+    -- prefer quoted assets seen in market.symbols; fall back to known stable/majors
+    select array_agg(sym_q order by length(sym_q) desc) into qlist
+    from (
+      select distinct quote_asset as sym_q from market.symbols
+      union
+      select distinct base_asset  as sym_q from market.symbols
+    ) s
+    where sym_q is not null;
+    if qlist is null or array_length(qlist, 1) = 0 then
+      qlist := array['USDT','USDC','FDUSD','BUSD','TUSD','DAI','USD','BRL','BTC','ETH','BNB'];
+    end if;
   exception when undefined_table then
     qlist := array['USDT','USDC','FDUSD','BUSD','TUSD','DAI','USD','BRL','BTC','ETH','BNB'];
   end;

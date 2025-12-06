@@ -470,14 +470,10 @@ function MoodAuxPanel({
           mood-aux
         </span>
         <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-2xl font-semibold text-slate-50">
-            Sentiment Vector
-          </h2>
           <span className="text-[11px] uppercase tracking-wide text-slate-400">
             {totalRows} pairs &bull; updated {formatTimestamp(lastUpdated)}
           </span>
         </div>
-        <p className="text-sm leading-relaxed text-slate-300">{description}</p>
       </header>
 
       <section className="space-y-4">
@@ -899,11 +895,6 @@ export default function MatricesClient() {
               <h1 className="text-3xl font-semibold text-slate-50">
                 Matrices Observatory
               </h1>
-              <p className="max-w-2xl text-sm leading-relaxed text-slate-300">
-                Full projection of the seven benchmark derivatives fused with
-                mood-aux so every pair&apos;s trajectory, drift, and delta can be
-                audited in one viewport.
-              </p>
             </div>
 
             <div className="flex items-center gap-2 self-start">

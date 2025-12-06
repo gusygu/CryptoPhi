@@ -105,6 +105,8 @@ function ensureWindow(win: string | null | undefined): MatrixWindow {
 }
 
 type MatValues = Record<string, Record<string, number | null>>;
+const LIVE_TIMEOUT_MS = Number(process.env.MATRICES_LIVE_TIMEOUT_MS ?? 4_000);
+const LIVE_ENABLED = process.env.MATRICES_LIVE_DISABLED !== "true";
 
 type MatricesLatestSuccessPayload = {
   ok: true;
@@ -139,6 +141,52 @@ type MatricesLatestErrorPayload = {
 export type MatricesLatestPayload =
   | MatricesLatestSuccessPayload
   | MatricesLatestErrorPayload;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+function emptyMatricesPayload(args: {
+  coins: string[];
+  quote: string;
+  window: MatrixWindow;
+}): MatricesLatestSuccessPayload {
+  const now = Date.now();
+  const values: MatValues = {};
+  const coins = normalizeCoins(args.coins);
+  const coinsDisplay = coins.filter((c) => c !== args.quote);
+  return {
+    ok: true,
+    coins: coinsDisplay,
+    symbols: [],
+    quote: args.quote,
+    window: args.window,
+    ts: now,
+    matrices: {
+      benchmark: { ts: now, values },
+      pct24h: { ts: now, values },
+      id_pct: { ts: now, values },
+      pct_drv: { ts: now, values },
+      pct_ref: { ts: now, values },
+      ref: { ts: now, values },
+      delta: { ts: now, values },
+      pct_snap: { ts: now, values },
+      snap: { ts: now, values },
+    },
+    meta: { openingTs: null, snapshotTs: null, universe: coins },
+  };
+}
 
 function toGrid(
   coins: readonly string[],
@@ -236,13 +284,30 @@ export async function buildMatricesLatestPayload(
     const resolvedCoins = await resolveCoinsUniverse(preferCoins);
     const viewCoins =
       preferCoins == null ? await fetchPairUniverseCoins() : [];
-    const coins = normalizeCoins([...resolvedCoins, ...viewCoins]);
+    const requestedCoins = normalizeCoins([...resolvedCoins, ...viewCoins]);
 
-    if (!coins.length) {
+    if (!requestedCoins.length) {
       throw new Error("No coins resolved for matrices universe");
     }
 
-    const live = await liveFromSources(coins);
+    if (!LIVE_ENABLED) {
+      return emptyMatricesPayload({ coins: requestedCoins, quote, window });
+    }
+
+    const live = await withTimeout(
+      liveFromSources(requestedCoins),
+      LIVE_TIMEOUT_MS,
+      "liveFromSources"
+    ).catch((err) => {
+      console.warn("[matrices/latest] liveFromSources failed:", err);
+      return null;
+    });
+
+    if (!live) {
+      return emptyMatricesPayload({ coins: requestedCoins, quote, window });
+    }
+
+    const coins = normalizeCoins(live.coins.length ? live.coins : requestedCoins);
 
     const bmGrid = toGrid(coins, live.matrices.benchmark.values);
     const nowTs = live.matrices.benchmark.ts;

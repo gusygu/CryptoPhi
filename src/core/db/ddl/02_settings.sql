@@ -678,6 +678,13 @@ SELECT
   cu.enabled
 FROM settings.coin_universe cu;
 
+-- Optional cookie snapshots for settings UI; harmless if unused
+create table if not exists settings.cookies (
+  name       text primary key,
+  value      jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
 -- append
 
 -- settings: session flag projection

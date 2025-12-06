@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS market.assets (
 );
 CREATE INDEX IF NOT EXISTS ix_assets_updated_at ON market.assets(updated_at DESC);
 
+-- Compatibility columns for older helper functions
+ALTER TABLE market.assets
+  ADD COLUMN IF NOT EXISTS asset text GENERATED ALWAYS AS (asset_code) STORED,
+  ADD COLUMN IF NOT EXISTS kind  text;
+
 -- Symbols
 CREATE TABLE IF NOT EXISTS market.symbols (
   symbol       text PRIMARY KEY,               -- e.g. 'BTCUSDT'
