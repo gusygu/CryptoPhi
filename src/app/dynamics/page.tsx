@@ -808,6 +808,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
               benchmarkGrid={snapshot?.matrix?.benchmark}
               lastUpdated={snapshot?.builtAt ?? matrixTimestamp}
               loading={loading || availability.loading}
+              previewSymbols={previewSymbolSet}
               className="min-w-0"
             />
           </div>

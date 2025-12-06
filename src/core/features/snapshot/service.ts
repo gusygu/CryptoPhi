@@ -138,8 +138,7 @@ export async function listSnapshotsForUser(
       client_context,
       created_at
     FROM snapshot.snapshot_registry
-    WHERE created_by_email IS NULL
-       OR LOWER(created_by_email) = $2::text
+    WHERE LOWER(created_by_email) = $2::text
     ORDER BY snapshot_stamp DESC
     LIMIT $1::int
     `,
@@ -161,6 +160,10 @@ export async function createSnapshot(input: {
     `snapshot @ ${new Date().toISOString().replace("T", " ").slice(0, 19)}`;
   const normalizedVersion = sanitizeAppVersion(input.appVersion ?? null);
   const normalizedScope = normalizeSnapshotScope(input.scopeOverride ?? null);
+
+  if (!normalizedEmail) {
+    throw new Error("email_required");
+  }
 
   let clientContext: any = {};
   try {

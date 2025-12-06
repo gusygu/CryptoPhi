@@ -2,12 +2,13 @@
 
 import React, { useMemo } from "react";
 import {
+  colorForBenchmarkDelta,
   colorForChange,
   withAlpha,
   type FrozenStage,
 } from "@/components/features/matrices/colors";
 
-type Ring = "green" | "red" | "grey" | "purple";
+type Ring = "green" | "orange" | "grey" | "purple" | "red";
 type Derivation = "direct" | "inverse" | "bridged";
 type Cell = {
   value: number | null;
@@ -57,11 +58,21 @@ type Props = {
 const ringClass = (ring: Ring) =>
   ring === "green"
     ? "ring ring-emerald-400"
+    : ring === "orange"
+    ? "ring ring-amber-400"
     : ring === "red"
     ? "ring ring-rose-500"
     : ring === "purple"
     ? "ring ring-purple-400"
     : "ring ring-slate-500";
+
+const RING_COLOR_HEX: Record<Ring, string> = {
+  green: "#22c55e",
+  orange: "#f97316",
+  grey: "#94a3b8",
+  purple: "#7c3aed",
+  red: "#fb7185",
+};
 
 const fmtPercent = (value: number | null, digits = 4) =>
   value == null || !Number.isFinite(value)
@@ -217,6 +228,7 @@ export default function MatricesTable({
                       color={cell?.color ?? "rgba(15,23,42,0.75)"}
                       value={formatted}
                       align={col.align}
+                      ring={cell?.ring ?? row.ring ?? "grey"}
                     />
                   );
                 })}
@@ -261,6 +273,9 @@ export default function MatricesTable({
         .ring-rose-500::before {
           border-color: #fb7185;
         }
+        .ring-amber-400::before {
+          border-color: #f59e0b;
+        }
         .ring-slate-500::before {
           border-color: #94a3b8;
         }
@@ -285,12 +300,15 @@ function TableCell({
   color,
   value,
   align = "right",
+  ring = "grey",
 }: {
   color: string;
   value: string;
   align?: "left" | "right";
+  ring?: Ring;
 }) {
   const bg = color ? withAlpha(color, 0.82) : "rgba(15,23,42,0.7)";
+  const ringColor = RING_COLOR_HEX[ring ?? "grey"] ?? RING_COLOR_HEX.grey;
   return (
     <td className="px-3 py-2 font-mono tabular-nums text-[13px]">
       <div
@@ -299,10 +317,11 @@ function TableCell({
           background: bg,
           color: "#e2e8f0",
           textAlign: align,
+          borderColor: withAlpha(ringColor, 0.6),
           boxShadow: `inset 0 1px 0 rgba(255,255,255,0.12), 0 0 14px ${withAlpha(
             color,
             0.35
-          )}`,
+          )}, 0 0 0 2px ${withAlpha(ringColor, 0.26)}`,
         }}
       >
         {value}
@@ -324,6 +343,9 @@ export type MatrixGridTableProps = {
     base: string,
     quote: string
   ) => FrozenStage | null;
+  symbols?: string[];
+  previewSet?: Set<string>;
+  previousValueFor?: (metric: string, base: string, quote: string) => number | null;
 };
 
 const matrixValue = (
@@ -346,7 +368,24 @@ export function MatrixGridTable({
   isPercent = false,
   zeroFloor,
   freezeStageFor,
+  symbols,
+  previewSet,
+  previousValueFor,
 }: MatrixGridTableProps) {
+  const preview = useMemo(() => previewSet ?? new Set<string>(), [previewSet]);
+  const symbolsKey = useMemo(
+    () => (symbols ?? []).map((sym) => String(sym ?? "").toUpperCase()).join("|"),
+    [symbols]
+  );
+  const symbolsSet = useMemo(() => {
+    const set = new Set<string>();
+    (symbols ?? []).forEach((sym) => {
+      const upper = String(sym ?? "").toUpperCase();
+      if (upper) set.add(upper);
+    });
+    return set;
+  }, [symbolsKey]);
+
   return (
     <div className="rounded-[22px] border border-white/10 bg-slate-950/70 p-3 shadow-[0_35px_120px_-60px_rgba(8,47,73,0.75)]">
       <div className="mb-3 flex items-baseline justify-between gap-2 px-1">
@@ -389,17 +428,35 @@ export function MatrixGridTable({
                     return (
                       <td key={`${base}-${quote}`} className="px-2 py-1">
                         <div className="rounded-lg border border-white/5 bg-slate-900/50 px-2 py-1.5 text-[11px] text-slate-500">
-                          —
+                          -
                         </div>
                       </td>
                     );
                   }
                   const val = matrixValue(values, base, quote);
                   const stage = freezeStageFor?.(metric, base, quote) ?? null;
-                  const color = colorForChange(val, {
-                    frozenStage: stage ?? undefined,
-                    zeroFloor,
-                  });
+                  const prevVal = previousValueFor?.(metric, base, quote) ?? null;
+                  const color =
+                    metric === "benchmark"
+                      ? colorForBenchmarkDelta(val, prevVal, {
+                          frozenStage: stage ?? undefined,
+                          zeroFloor,
+                        })
+                      : colorForChange(val, {
+                          frozenStage: stage ?? undefined,
+                          zeroFloor,
+                        });
+                  const directSymbol = `${base}${quote}`;
+                  const inverseSymbol = `${quote}${base}`;
+                  const ring: Ring =
+                    preview.has(directSymbol)
+                      ? "green"
+                      : preview.has(inverseSymbol)
+                      ? "orange"
+                      : symbolsSet.has(directSymbol) || symbolsSet.has(inverseSymbol)
+                      ? "grey"
+                      : "grey";
+                  const ringHex = RING_COLOR_HEX[ring] ?? RING_COLOR_HEX.grey;
                   const display = isPercent
                     ? fmtPercent(val, 4)
                     : fmtDecimal(val, 7);
@@ -410,10 +467,11 @@ export function MatrixGridTable({
                         style={{
                           background: withAlpha(color, 0.82),
                           color: "#e2e8f0",
+                          borderColor: withAlpha(ringHex, 0.6),
                           boxShadow: `inset 0 1px 0 rgba(255,255,255,0.14), 0 0 12px ${withAlpha(
                             color,
                             0.3
-                          )}`,
+                          )}, 0 0 0 2px ${withAlpha(ringHex, 0.28)}`,
                         }}
                       >
                         {display}

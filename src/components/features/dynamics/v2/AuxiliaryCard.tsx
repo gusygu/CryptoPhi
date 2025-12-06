@@ -18,6 +18,7 @@ export type AuxiliaryCardProps = {
   lastUpdated?: number | string | Date | null;
   loading?: boolean;
   className?: string;
+  previewSymbols?: Set<string>;
 };
 
 type StatBadgeProps = {
@@ -163,16 +164,34 @@ export default function AuxiliaryCard({
   lastUpdated,
   loading,
   className,
+  previewSymbols,
 }: AuxiliaryCardProps) {
   const A = useMemo(() => String(base ?? "").toUpperCase(), [base]);
   const B = useMemo(() => String(quote ?? "").toUpperCase(), [quote]);
   const symbol = useMemo(() => (A && B ? `${A}${B}` : ""), [A, B]);
+  const previewAllowed = useMemo(
+    () => !previewSymbols?.size || previewSymbols.has(symbol),
+    [previewSymbols, symbol]
+  );
 
   const [strState, setStrState] = useState<StrAuxState>({ loading: false, error: null, metrics: null });
 
   const mooMetric = (metrics as any)?.moo ?? metrics?.mea ?? null;
   const strMetric = metrics?.str ?? null;
   const cinStats = cin ?? metrics?.cin ?? null;
+  const snapshotStrMetrics = useMemo<StrAuxSnapshot | null>(() => {
+    if (!strMetric) return null;
+    return {
+      gfmDeltaPct: toNumber((strMetric as any)?.gfmDeltaPct),
+      bfmDeltaPct: toNumber((strMetric as any)?.bfmDeltaPct),
+      shifts: toNumber((strMetric as any)?.shift),
+      swaps: toNumber((strMetric as any)?.swaps ?? (strMetric as any)?.vSwap),
+      inertia: toNumber((strMetric as any)?.inertia ?? (strMetric as any)?.intrinsic?.inertia?.total),
+      disruption: toNumber((strMetric as any)?.disruption),
+      vTendency: toNumber((strMetric as any)?.vTendency),
+      vSwap: toNumber((strMetric as any)?.vSwap),
+    };
+  }, [strMetric]);
 
   const candidateCount = Array.isArray(candidates)
     ? candidates.length
@@ -186,10 +205,19 @@ export default function AuxiliaryCard({
       setStrState({ loading: false, error: null, metrics: null });
       return;
     }
+    if (!previewAllowed) {
+      setStrState({ loading: false, error: "Preview not available for this symbol", metrics: null });
+      return;
+    }
     if (typeof window === "undefined") return;
 
     const controller = new AbortController();
-    setStrState((prev) => ({ ...prev, loading: true, error: null }));
+    setStrState((prev) => ({
+      ...prev,
+      loading: snapshotStrMetrics ? false : true,
+      error: null,
+      metrics: snapshotStrMetrics ?? prev.metrics,
+    }));
 
     (async () => {
       try {
@@ -239,16 +267,16 @@ export default function AuxiliaryCard({
         }
       } catch (err: unknown) {
         if (controller.signal.aborted) return;
-        setStrState({
+        setStrState((prev) => ({
           loading: false,
           error: err instanceof Error ? err.message : String(err),
-          metrics: null,
-        });
+          metrics: snapshotStrMetrics ?? prev.metrics,
+        }));
       }
     })();
 
     return () => controller.abort();
-  }, [symbol]);
+  }, [symbol, previewAllowed, snapshotStrMetrics]);
 
   const status =
     loading || strState.loading ? "Loading auxiliary data..." : `Snapshot - ${formatRelative(lastUpdated)}`;
@@ -398,7 +426,9 @@ export default function AuxiliaryCard({
       <div className="rounded-[22px] border border-emerald-400/25 bg-[#030c15]/85 p-4">
         <div className="mb-3 flex items-center justify-between">
           <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-100/80">CIN-Aux</div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/70"></div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/70">
+            {`Snapshot ${formatRelative(lastUpdated)}`}
+          </div>
         </div>
         {loading ? (
           <div className="space-y-2 text-[11px] text-emerald-200/50">
@@ -411,18 +441,41 @@ export default function AuxiliaryCard({
             {derivedCinRows.map(({ symbol, stat }) => (
               <div
                 key={symbol}
-                className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-400/25 bg-[#041017]/80 px-3 py-2 text-[11px] text-emerald-50"
+                className="flex flex-col gap-2 rounded-2xl border border-emerald-400/25 bg-[#041017]/80 px-3 py-2 text-[11px] text-emerald-50"
               >
-                <div className="font-mono uppercase tracking-[0.3em]">{symbol}</div>
-                <div className="flex flex-1 items-center justify-end gap-3 text-right text-[10px]">
-                  <div>
-                    <div className="font-mono text-sm text-emerald-50">
-                      {formatNumber(stat.session.imprint, { precision: 3, fallback: "0" })}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-mono uppercase tracking-[0.3em]">{symbol}</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/70">snapshot</div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/5 px-3 py-2">
+                    <div className="text-[9px] uppercase tracking-[0.26em] text-emerald-200/80">session</div>
+                    <div className="mt-1 flex items-center justify-between text-[10px] text-emerald-200/80">
+                      <span>imprint</span>
+                      <span className="font-mono text-sm text-emerald-50">
+                        {formatNumber(stat.session.imprint, { precision: 3, fallback: "0" })}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-emerald-200/80">
+                      <span>luggage</span>
+                      <span className="font-mono text-sm text-emerald-50">
+                        {formatNumber(stat.session.luggage, { precision: 3, fallback: "0" })}
+                      </span>
                     </div>
                   </div>
-                  <div>
-                    <div className="font-mono text-sm text-emerald-50">
-                      {formatNumber(stat.session.luggage, { precision: 3, fallback: "0" })}
+                  <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/5 px-3 py-2">
+                    <div className="text-[9px] uppercase tracking-[0.26em] text-emerald-200/80">cycle</div>
+                    <div className="mt-1 flex items-center justify-between text-[10px] text-emerald-200/80">
+                      <span>imprint</span>
+                      <span className="font-mono text-sm text-emerald-50">
+                        {formatNumber(stat.cycle.imprint, { precision: 3, fallback: "0" })}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-emerald-200/80">
+                      <span>luggage</span>
+                      <span className="font-mono text-sm text-emerald-50">
+                        {formatNumber(stat.cycle.luggage, { precision: 3, fallback: "0" })}
+                      </span>
                     </div>
                   </div>
                 </div>

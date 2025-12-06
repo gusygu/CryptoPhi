@@ -325,12 +325,138 @@ function resolveStreams(entry: any) {
   return rows;
 }
 
+type ScatterPlotProps = {
+  title: string;
+  counts: number[];
+  nuclei?: number[];
+  accent?: "emerald" | "cyan" | "violet";
+  cumulative?: boolean;
+};
+
+const SCATTER_ACCENTS: Record<
+  NonNullable<ScatterPlotProps["accent"]>,
+  { base: string; glow: string; grid: string }
+> = {
+  emerald: { base: "#34d399", glow: "rgba(52,211,153,0.25)", grid: "rgba(52,211,153,0.12)" },
+  cyan: { base: "#22d3ee", glow: "rgba(34,211,238,0.25)", grid: "rgba(34,211,238,0.12)" },
+  violet: { base: "#a855f7", glow: "rgba(168,85,247,0.25)", grid: "rgba(168,85,247,0.12)" },
+};
+
+function ScatterPlot({
+  title,
+  counts,
+  nuclei = [],
+  accent = "emerald",
+  cumulative = false,
+}: ScatterPlotProps) {
+  const palette = SCATTER_ACCENTS[accent] ?? SCATTER_ACCENTS.emerald;
+  const finite = counts
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  if (!finite.length) {
+    return (
+      <div className="rounded-2xl border border-indigo-900/30 bg-[#050517]/60 p-3 text-xs text-indigo-200/70">
+        No scatter data
+      </div>
+    );
+  }
+
+  const values: number[] = [];
+  let running = 0;
+  for (const v of finite) {
+    running = cumulative ? running + v : v;
+    values.push(running);
+  }
+
+  const width = Math.max(200, values.length * 10);
+  const height = 120;
+  const maxVal = Math.max(...values, 1);
+  const step = width / Math.max(values.length, 1);
+  const points = values.map((value, idx) => {
+    const x = idx * step + step / 2;
+    const normalized = value / maxVal;
+    const y = height - normalized * (height - 22) - 8;
+    return { x, y, value, idx };
+  });
+  const marked = new Set(nuclei ?? []);
+
+  return (
+    <div className="rounded-2xl border border-indigo-900/30 bg-[#050517]/50 p-3">
+      <div className="mb-2 text-[11px] uppercase tracking-wide text-indigo-200/80">
+        {title}
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-[160px] w-full"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={title}
+      >
+        <rect x={0} y={0} width={width} height={height} fill="rgba(7,10,22,0.65)" />
+        {[0.25, 0.5, 0.75].map((pct) => (
+          <line
+            key={pct}
+            x1={0}
+            x2={width}
+            y1={height * pct}
+            y2={height * pct}
+            stroke={palette.grid}
+            strokeWidth={1}
+          />
+        ))}
+        <polyline
+          fill="none"
+          stroke={palette.base}
+          strokeWidth={1.4}
+          strokeOpacity={0.8}
+          points={points.map((p) => `${p.x},${p.y}`).join(" ")}
+        />
+        {points.map((p) => (
+          <circle
+            key={p.idx}
+            cx={p.x}
+            cy={p.y}
+            r={marked.has(p.idx) ? 4 : 3}
+            fill={palette.base}
+            opacity={marked.has(p.idx) ? 0.95 : 0.8}
+            stroke={marked.has(p.idx) ? "#ffffff" : palette.base}
+            strokeWidth={marked.has(p.idx) ? 1.2 : 0.8}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 function HistogramSections({ statsEntry, vectorRow }: { statsEntry: any; vectorRow: VectorRow | undefined }) {
   const binHistogram = resolveHistogram(statsEntry);
   const vectorHistogram = resolveVectorHistogram(vectorRow);
+  const scatterSource = vectorHistogram ?? binHistogram;
   if (!binHistogram && !vectorHistogram) return null;
   return (
     <div className="mt-4 space-y-4">
+      {scatterSource ? (
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-indigo-200/80 mb-2">
+            Sampling scatter
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ScatterPlot
+              title="Samples by bin"
+              counts={scatterSource.counts}
+              nuclei={scatterSource.nuclei}
+              accent="violet"
+            />
+            <ScatterPlot
+              title="Accumulated value"
+              counts={scatterSource.counts}
+              nuclei={scatterSource.nuclei}
+              accent="cyan"
+              cumulative
+            />
+          </div>
+        </div>
+      ) : null}
       {binHistogram ? (
         <div>
           <div className="text-[11px] uppercase tracking-wide text-indigo-200/80 mb-2">

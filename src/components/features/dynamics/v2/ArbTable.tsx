@@ -111,28 +111,32 @@ function formatElapsed(changedAtIso?: string): string {
 }
 
 function SwapBadge({ tag }: { tag?: SwapTag }) {
-  if (!tag) {
-    return (
-      <span className="rounded-full border border-slate-600/40 px-2 py-[2px] text-[9px] uppercase tracking-[0.28em] text-slate-400">
-        no swaps
-      </span>
-    );
-  }
   const tone =
-    tag.direction === "up"
+    tag?.direction === "up"
       ? "border-sky-400/60 bg-sky-400/10 text-sky-100"
-      : tag.direction === "down"
+      : tag?.direction === "down"
       ? "border-orange-400/60 bg-orange-400/10 text-orange-100"
       : "border-slate-500/50 bg-slate-500/10 text-slate-200";
-  const arrow = tag.direction === "up" ? "▲" : tag.direction === "down" ? "▼" : "•";
-  const elapsed = formatElapsed(tag.changedAtIso);
+  const directionLabel = tag?.direction ?? "n/a";
+  const count = Number.isFinite(tag?.count) ? Number(tag?.count ?? 0) : 0;
+  const clock = formatClock(tag?.changedAtIso);
   return (
-    <span className={classNames("inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[9px] uppercase tracking-[0.28em]", tone)}>
-      <span className="font-bold">{arrow}</span>
-      <span>{tag.count ?? 0}</span>
-      <span className="text-[8px] opacity-80">{elapsed}</span>
+    <span className={classNames("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[2px] text-[9px] uppercase tracking-[0.28em]", tone)}>
+      <span className="font-mono lowercase">{directionLabel}</span>
+      <span className="font-mono">{count}</span>
+      <span className="text-[8px] opacity-80">{clock}</span>
     </span>
   );
+}
+
+function formatClock(changedAtIso?: string): string {
+  if (!changedAtIso) return "n/a";
+  const ts = Date.parse(changedAtIso);
+  if (!Number.isFinite(ts)) return "n/a";
+  const d = new Date(ts);
+  const hh = `${d.getHours()}`.padStart(2, "0");
+  const mm = `${d.getMinutes()}`.padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function EdgeCell({

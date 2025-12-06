@@ -3,8 +3,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MatrixGridTable, type ApiMatrixRow as TableMatrixRow } from "./MatricesTable";
 import MooAuxCard from "@/components/features/moo-aux/MooAuxCard";
-import { colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
+import { colorForBenchmarkDelta, colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
 import { useSettings } from "@/lib/settings/client";
+import { loadPreviewSymbolSet } from "@/components/features/matrices/colouring";
 
 type MatrixValues = Record<string, Record<string, number | null>>;
 
@@ -48,9 +49,9 @@ type MatricesLatestResponse = {
 type UiMatrixRow = TableMatrixRow;
 
 const DEFAULT_POLL_INTERVAL_MS = 80_000;
-const FREEZE_DELTA_EPS = 1e-12;
-const ZERO_FLOOR_DECIMAL = 1e-7;
-const ZERO_FLOOR_PERCENT = 0.0005;
+const FREEZE_DELTA_EPS = 1e-10;
+const ZERO_FLOOR_DECIMAL = 1e-9;
+const ZERO_FLOOR_PERCENT = 1e-7;
 const WINDOW_TO_MS: Record<"15m" | "30m" | "1h", number> = {
   "15m": 15 * 60 * 1000,
   "30m": 30 * 60 * 1000,
@@ -77,9 +78,10 @@ type BuildRowsArgs = {
   payload: MatricesLatestResponse | null;
   previewSet: Set<string>;
   freezeStageFor: (metric: string, base: string, quote: string) => FrozenStage | null;
+  previousValueFor: (metric: string, base: string, quote: string) => number | null;
 };
 
-function buildMatrixRows({ payload, previewSet, freezeStageFor }: BuildRowsArgs): UiMatrixRow[] {
+function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor }: BuildRowsArgs): UiMatrixRow[] {
   if (!payload?.ok) return [];
 
   const quote = toUpper(payload.quote ?? "USDT");
@@ -119,15 +121,14 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor }: BuildRowsArgs)
       ? "inverse"
       : "bridged";
 
-    const directPreview = previewSet.has(directSymbol);
-    const inversePreview = previewSet.has(inverseSymbol);
-    const symbolRing: UiMatrixRow["symbolRing"] = frozen
-      ? "purple"
-      : directPreview
-      ? "green"
-      : inversePreview
-      ? "red"
-      : "grey";
+    const symbolRing: UiMatrixRow["symbolRing"] =
+      previewSet.has(directSymbol)
+        ? "green"
+        : previewSet.has(inverseSymbol)
+        ? "orange"
+        : symbolsSet.has(directSymbol) || symbolsSet.has(inverseSymbol)
+        ? "grey"
+        : "grey";
 
     const benchmarkValue = getMatrixValue(benchValues, base, quote);
     const pct24 = getMatrixValue(pct24Values, base, quote);
@@ -144,24 +145,22 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor }: BuildRowsArgs)
     //  benchmark > 1 → green (base > quote)
     //  benchmark < 1 → red   (base < quote)
     //  else → grey
-    let pairRing: UiMatrixRow["ring"] = "grey";
-    if (frozen) {
-      pairRing = "purple";
-    } else if (benchmarkValue != null && Number.isFinite(benchmarkValue)) {
-      if (benchmarkValue > 1) pairRing = "green";
-      else if (benchmarkValue < 1) pairRing = "red";
-    }
+    const pairRing: UiMatrixRow["ring"] = symbolRing;
 
     // Color fields:
     //  decimals: zeroFloor = 1e-7
     //  percentages: zeroFloor = 0.0005 (0.05%)
-    const benchmarkChange =
-      benchmarkValue == null ? null : benchmarkValue - 1;
-
-    const benchmarkColor = colorForChange(benchmarkChange, {
-      frozenStage: benchStage ?? undefined,
-      zeroFloor: ZERO_FLOOR_DECIMAL,
-    });
+    const prevBenchmark = previousValueFor("benchmark", base, quote);
+    const benchmarkColor =
+      prevBenchmark != null
+        ? colorForBenchmarkDelta(benchmarkValue, prevBenchmark, {
+            frozenStage: benchStage ?? undefined,
+            zeroFloor: ZERO_FLOOR_DECIMAL,
+          })
+        : colorForChange(
+            benchmarkValue == null ? null : benchmarkValue - 1,
+            { frozenStage: benchStage ?? undefined, zeroFloor: ZERO_FLOOR_DECIMAL }
+          );
     const pctColor = colorForChange(pct24, {
       frozenStage: pct24Stage ?? undefined,
       zeroFloor: ZERO_FLOOR_PERCENT,
@@ -227,12 +226,12 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor }: BuildRowsArgs)
 }
 
 const RING_LEGEND = [
-  { label: "base > quote", color: "#4ade80" },
-  { label: "base < quote", color: "#f87171" },
-  { label: "bridged route", color: "#94a3b8" },
-  { label: "frozen", color: "#c084fc" },
-  { label: "near-flat |value| ≤ 1e-7", color: "#facc15", square: true },
-];
+    { label: "preview direct", color: "#22c55e" },
+    { label: "preview anti-sym", color: "#f97316" },
+    { label: "bridged/missing", color: "#94a3b8" },
+    { label: "frozen cycles", color: "#7c3aed" },
+    { label: "near-flat |value| < 1e-9", color: "#facc15", square: true },
+  ];
 
 function formatTimestamp(ts?: number | null): string {
   if (!ts && ts !== 0) return "-";
@@ -267,7 +266,7 @@ type MoodSnapshot = {
   dominance: number | null;
 };
 
-const ZERO_FLOOR = 1e-7; // decimal sensitivity for mood bucketing
+const ZERO_FLOOR = 1e-9; // decimal sensitivity for mood bucketing
 
 const MOOD_LEVELS: Array<{
   max: number;
@@ -665,6 +664,7 @@ export default function MatricesClient() {
   const freezeMapRef = useRef<Map<string, number>>(new Map());
   const prevValuesRef = useRef<Map<string, number>>(new Map());
   const [freezeVersion, setFreezeVersion] = useState(0);
+  const [previewSet, setPreviewSet] = useState<Set<string>>(new Set());
   const { data: settings } = useSettings();
 
   const fetchLatest = useCallback(async () => {
@@ -707,8 +707,6 @@ export default function MatricesClient() {
     const id = setInterval(fetchLatest, pollMs);
     return () => clearInterval(id);
   }, [autoRefreshEnabled, pollMs, fetchLatest]);
-
-  const previewSet = useMemo(() => new Set<string>(), []);
 
   useEffect(() => {
     if (!payload?.ok) return;
@@ -791,15 +789,50 @@ export default function MatricesClient() {
     [freezeVersion]
   );
 
+  const previousValueFor = useCallback(
+    (metric: string, base: string, quote: string): number | null => {
+      const key = `${metric}|${base}|${quote}`;
+      const val = prevValuesRef.current.get(key);
+      if (val == null) return null;
+      const num = Number(val);
+      return Number.isFinite(num) ? num : null;
+    },
+    [freezeVersion]
+  );
+
   const rows = useMemo<UiMatrixRow[]>(() => {
-    return buildMatrixRows({ payload, previewSet, freezeStageFor });
-  }, [payload, previewSet, freezeStageFor]);
+    return buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor });
+  }, [payload, previewSet, freezeStageFor, previousValueFor]);
 
   const coins = useMemo<string[]>(() => {
     const quoteSym = toUpper(payload?.quote ?? "USDT");
     const raw = Array.isArray(payload?.coins) ? payload.coins.map(toUpper) : [];
     return Array.from(new Set<string>([quoteSym, ...raw]));
   }, [payload?.coins, payload?.quote]);
+  const coinsKey = useMemo(() => coins.join("|"), [coins]);
+
+  useEffect(() => {
+    let active = true;
+    if (!coins.length) {
+      setPreviewSet(new Set());
+      return () => {
+        active = false;
+      };
+    }
+    (async () => {
+      try {
+        const { set } = await loadPreviewSymbolSet(coins);
+        if (!active) return;
+        setPreviewSet(new Set(set));
+      } catch {
+        if (!active) return;
+        setPreviewSet(new Set());
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [coinsKey]);
 
   const quote = toUpper(payload?.quote ?? "USDT");
   const baseCoins = useMemo(
@@ -955,6 +988,9 @@ export default function MatricesClient() {
               isPercent={entry.isPercent}
               zeroFloor={entry.zeroFloor}
               freezeStageFor={freezeStageFor}
+              symbols={payload?.symbols}
+              previewSet={previewSet}
+              previousValueFor={previousValueFor}
             />
           ))}
         </section>

@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { DynamicsCard } from "@/components/features/dynamics/DynamicsCard";
 import { classNames, formatNumber, formatPercent, uniqueUpper } from "@/components/features/dynamics/utils";
-import { colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
+import { colorForChange, colorForMooDelta, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
 
 type Grid = Array<Array<number | null>>;
 
@@ -28,12 +28,10 @@ export type DynamicsMatrixProps = {
   className?: string;
 };
 
-const ZERO_FLOOR = 1e-7;
+const ZERO_FLOOR = 1e-9;
+const MOO_ZERO_FLOOR = 1e-9;
 const NULL_BG = "rgba(250,204,21,0.2)";
 const NULL_TEXT = "#422006";
-
-const MOO_SHADES_POS = ["#0ea5e9", "#1fb2f5", "#38bdf8", "#7dd3fc"];
-const MOO_SHADES_NEG = ["#0b3b73", "#0e4f94", "#155fa8", "#1c71c2"];
 
 const ensureUpper = (v: string | null | undefined) => String(v ?? "").trim().toUpperCase();
 
@@ -66,21 +64,9 @@ function formatRelative(ts?: number | string | Date | null): string {
   return `${days}d ${hours % 24}h ago`;
 }
 
-function mooColor(value: number | null, stage: FrozenStage | null): string {
-  if (stage) return withAlpha("#a855f7", stage === "mid" ? 0.95 : 0.7);
-  if (value == null || !Number.isFinite(value)) return NULL_BG;
-
-  const drift = value - 1;
-  const mag = Math.abs(drift);
-  if (mag <= ZERO_FLOOR) return withAlpha("#facc15", 0.55);
-  const idx = Math.min(3, Math.floor(Math.log10(mag / 0.0005 + 1) * 2));
-  const palette = drift >= 0 ? MOO_SHADES_POS : MOO_SHADES_NEG;
-  return withAlpha(palette[idx] ?? palette[palette.length - 1]!, 0.9);
-}
-
 function textForValue(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return formatNumber(value, { precision: 7, minimumFractionDigits: 7, fallback: "—" });
+  if (value == null || !Number.isFinite(value)) return "-";
+  return formatNumber(value, { precision: 7, minimumFractionDigits: 7, fallback: "-" });
 }
 
 export default function DynamicsMatrix({
@@ -104,6 +90,8 @@ export default function DynamicsMatrix({
     if (!payloadSymbols?.length) return new Set<string>();
     return new Set(payloadSymbols.map(ensureUpper));
   }, [payloadSymbols]);
+  const prevMooRef = useRef<Map<string, number>>(new Map());
+  const gridKey = useMemo(() => rows.join("|"), [rows]);
 
   const columnCount = cols.length || 1;
   const cellWidth = Math.max(44, Math.min(68, Math.floor(600 / Math.max(columnCount * 1.1, 1))));
@@ -112,15 +100,29 @@ export default function DynamicsMatrix({
   const selectedBase = ensureUpper(selected?.base);
   const selectedQuote = ensureUpper(selected?.quote);
 
-  const status = loading ? "Loading dynamics…" : `Snapshot • ${formatRelative(lastUpdated ?? null)}`;
+        const status = loading ? "Loading dynamics..." : `Snapshot - ${formatRelative(lastUpdated ?? null)}`;
 
-  const ringFor = (base: string, quote: string, stage: FrozenStage | null): string => {
-    if (stage) return "#c084fc";
+  const ringFor = (base: string, quote: string): string => {
     const sym = `${base}${quote}`;
-    if (preview.has(sym)) return "#4ade80";
-    if (payload.has(sym)) return "#f87171";
+    const inverse = `${quote}${base}`;
+    if (preview.has(sym)) return "#22c55e";
+    if (preview.has(inverse)) return "#f97316";
+    if (payload.has(sym) || payload.has(inverse)) return "#94a3b8";
     return "#94a3b8";
   };
+
+  useEffect(() => {
+    const next = new Map<string, number>();
+    rows.forEach((base, i) => {
+      cols.forEach((quote, j) => {
+        if (base === quote) return;
+        const val = valueFromGrid(mea, i, j);
+        if (val == null || !Number.isFinite(val)) return;
+        next.set(`${base}|${quote}`, Number(val));
+      });
+    });
+    prevMooRef.current = next;
+  }, [mea, gridKey, rows, cols]);
 
   const renderCell = (i: number, j: number) => {
     const base = rows[i]!;
@@ -138,10 +140,16 @@ export default function DynamicsMatrix({
     const stage = freezeStageFor?.(base, quote) ?? null;
     const idVal = valueFromGrid(idPct, i, j);
     const mooVal = valueFromGrid(mea, i, j);
+    const prevMoo = prevMooRef.current.get(`${base}|${quote}`) ?? null;
 
-    const ringColor = ringFor(base, quote, stage);
+    const ringColor = ringFor(base, quote);
     const idColor = colorForChange(idVal, { frozenStage: stage ?? undefined, zeroFloor: ZERO_FLOOR });
-    const mooBg = mooColor(mooVal, stage);
+    const mooBase = colorForMooDelta(
+      mooVal,
+      prevMoo,
+      { frozenStage: stage ?? undefined, zeroFloor: MOO_ZERO_FLOOR }
+    );
+    const mooBg = mooBase ? withAlpha(mooBase, 0.9) : NULL_BG;
 
     const pairAllowed =
       allowedSymbols == null ||
@@ -219,18 +227,18 @@ export default function DynamicsMatrix({
         <span className="rounded-full border border-emerald-300/40 bg-emerald-300/10 px-2 py-[2px]">id_pct header</span>
         <span className="rounded-full border border-cyan-300/40 bg-cyan-300/10 px-2 py-[2px]">moo header</span>
         <span className="rounded-full border border-emerald-400/50 px-2 py-[2px] text-emerald-50/80">
-          Green: preview
+          Green ring: preview
         </span>
-        <span className="rounded-full border border-rose-400/50 px-2 py-[2px] text-emerald-50/80">
-          Red: anti-sym / payload
+        <span className="rounded-full border border-amber-400/60 px-2 py-[2px] text-amber-50">
+          Orange ring: anti-sym
         </span>
         <span className="rounded-full border border-slate-400/50 px-2 py-[2px] text-emerald-50/80">
-          Grey: bridged
+          Grey ring: bridged
         </span>
         <span className="rounded-full border border-purple-400/60 px-2 py-[2px] text-emerald-50/80">
-          Purple: frozen
+          Purple fill: frozen
         </span>
-        <span className="rounded-full border border-amber-400/50 px-2 py-[2px] text-amber-100/90">Yellow: null</span>
+        <span className="rounded-full border border-amber-400/50 px-2 py-[2px] text-amber-100/90">Amber: |v| &lt; 1e-9</span>
       </div>
 
       <div className="flex-1 rounded-[18px] border border-emerald-400/15 bg-[#01050b]/85 p-1 shadow-[inset_0_1px_0_rgba(94,234,212,0.15)] overflow-auto">

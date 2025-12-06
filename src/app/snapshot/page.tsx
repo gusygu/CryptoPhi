@@ -343,8 +343,8 @@ export default function SnapshotAlbumPage() {
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold">Snapshots</h1>
           <p className="text-sm text-slate-300">
-            Whole-system captures for matrices, cin/str aux, and moo engines.
-            Filter, browse, and drill into each scope with the inline pager.
+            Your RLS-scoped captures for matrices, cin/str aux, and moo engines.
+            Only rows created by your session are listed and newly created entries are always tagged with your account.
           </p>
         </div>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
