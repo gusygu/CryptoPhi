@@ -267,15 +267,15 @@ export default async function SettingsPage({
   const err = pick("err");
 
   return (
-    <div className="relative min-h-dvh">
-      {/* heat-fade background */}
+    <div className="relative min-h-dvh bg-[#050913] text-slate-100">
+      {/* cohesive sapphire background glow */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -top-24 -left-24 size-[520px] rounded-full blur-3xl opacity-20"
-             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(16,185,129,0.55) 0%, rgba(16,185,129,0.0) 70%)" }} />
-        <div className="absolute -bottom-24 -right-24 size-[520px] rounded-full blur-3xl opacity-20"
-             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(59,130,246,0.45) 0%, rgba(59,130,246,0.0) 70%)" }} />
-        <div className="absolute top-1/2 left-1/3 size-[460px] -translate-x-1/2 -translate-y-1/2 rounded-full blur-3xl opacity-20"
-             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(244,63,94,0.36) 0%, rgba(244,63,94,0.0) 70%)" }} />
+        <div className="absolute -top-28 -left-20 size-[560px] rounded-full blur-3xl opacity-25"
+             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(56,189,248,0.55) 0%, rgba(5,9,19,0) 72%)" }} />
+        <div className="absolute -bottom-28 -right-20 size-[540px] rounded-full blur-3xl opacity-20"
+             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(37,99,235,0.42) 0%, rgba(5,9,19,0) 72%)" }} />
+        <div className="absolute top-1/2 left-1/3 size-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full blur-3xl opacity-20"
+             style={{ background: "radial-gradient(60% 60% at 50% 50%, rgba(29,78,216,0.36) 0%, rgba(5,9,19,0) 72%)" }} />
       </div>
 
       <div className="relative z-10 p-6">
