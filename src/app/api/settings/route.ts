@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";                 // ✅ use cookies() here
 import { getAll, serializeSettingsCookie } from "@/lib/settings/server";
+import { getCurrentSession } from "@/app/(server)/auth/session";
 import { query } from "@/core/db/pool_server";
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -46,6 +47,11 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: Request) {
+  const session = await getCurrentSession();
+  if (!session?.isAdmin) {
+    return NextResponse.json({ ok: false, error: "Admin only" }, { status: 403 });
+  }
+
   const body = await req.json();
 // inside PUT /api/settings
 const enable: string[] = Array.isArray(body.enable) ? body.enable : [];

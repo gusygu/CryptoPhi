@@ -2,6 +2,7 @@
 "use server";
 
 import { cookies } from "next/headers";
+import { getCurrentSession } from "@/app/(server)/auth/session";
 import {
   fetchCoinUniverseBases,
   normalizeCoinList,
@@ -37,8 +38,14 @@ export async function getAll(): Promise<AppSettings> {
   } catch {
     // keep migrated value on failure
   }
+  const userCoins = normalizeCoinList(settings.coinUniverse);
   const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
-  settings.coinUniverse = dbCoins.length ? dbCoins : normalizeCoinList(settings.coinUniverse);
+  // Prefer user-specific coins (cookie), otherwise fall back to DB-enabled universe, then defaults.
+  settings.coinUniverse = userCoins.length
+    ? userCoins
+    : dbCoins.length
+    ? dbCoins
+    : normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
   return settings;
 }
 
@@ -48,9 +55,14 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
 }> {
   const current = await getAll();
   const merged = migrateSettings({ ...current, ...(nextValue as any) });
+  const session = await getCurrentSession();
+  const isAdmin = !!session?.isAdmin;
 
   const normalizedCoins = normalizeCoinList(merged.coinUniverse);
-  await syncCoinUniverseFromBases(normalizedCoins);
+  // Only sync global coin universe for admins; regular users keep coins in their own cookie.
+  if (isAdmin) {
+    await syncCoinUniverseFromBases(normalizedCoins);
+  }
 
   const normalized: AppSettings = {
     ...merged,
