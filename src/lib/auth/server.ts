@@ -7,6 +7,28 @@ import { query, withClient } from "@/core/db";
 const SESSION_COOKIE = "session";            // reuse your existing cookie name
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
+function cookieDomainFromEnv(): string | undefined {
+  const envDomain =
+    process.env.COOKIE_DOMAIN ||
+    process.env.NEXT_PUBLIC_COOKIE_DOMAIN ||
+    undefined;
+  if (envDomain && envDomain !== "localhost") {
+    return envDomain;
+  }
+
+  // Try to derive from BASE_URL if present (e.g., https://app.cryptophi.xyz)
+  const base = process.env.BASE_URL;
+  if (base) {
+    try {
+      const u = new URL(base);
+      const host = u.hostname;
+      if (host && host !== "localhost") return host;
+    } catch {}
+  }
+
+  return undefined;
+}
+
 // ───────────────── basic helpers ─────────────────
 
 function randomToken(): string {
@@ -146,12 +168,18 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
   );
 
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, rawToken, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    expires: expiresAt,
-  });
+  const cookieDomain = cookieDomainFromEnv();
+  jar.set(
+    SESSION_COOKIE,
+    rawToken,
+    {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      expires: expiresAt,
+      domain: cookieDomain,
+    }
+  );
 
   await query(`update auth."user" set last_login_at = now() where user_id = $1`, [userId]);
 

@@ -1,77 +1,112 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-// Adjust these imports to your stack:
-import { db } from "@/server/db"; // your DB client
+
+import { db } from "@/server/db";
 import { getCurrentUser } from "@/server/auth/session";
 import { sendInviteEmail } from "@/server/email/sendInviteEmail";
 import { env } from "@/env";
 
-type AdminInviteRow = {
+type InviteTokenRow = {
+  invite_id: string;
   email: string;
+  status: string;
+  expires_at: string | null;
+  used_at: string | null;
   created_at: string;
-  uses: number;
-  max_uses: number;
+  used_by_user_id: string | null;
 };
 
-type InvitedUserRow = {
+type UserRow = {
   user_id: string;
   email: string;
   nickname: string | null;
   created_at: string;
 };
 
+const INVITE_TTL_DAYS = 14;
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 function hashToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function buildInviteUrl(rawToken: string) {
+  const base = (env.BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return `${base}/auth/invite/${encodeURIComponent(rawToken)}`;
+}
+
+function mapInvite(row: InviteTokenRow | null) {
+  if (!row) return null;
+  const consumed = row.status !== "issued" || row.used_at !== null;
+  const uses = row.used_at ? 1 : 0;
+  return {
+    email: row.email,
+    createdAt: row.created_at,
+    uses,
+    maxUses: 1,
+    consumed,
+  };
+}
+
+async function findInvitedUser(invite: InviteTokenRow | null): Promise<UserRow | null> {
+  if (!invite) return null;
+  // Prefer explicit linkage when invite was consumed
+  if (invite.used_by_user_id) {
+    const q = await db.query<UserRow>(
+      `
+        SELECT user_id, email, nickname, created_at
+          FROM auth."user"
+         WHERE user_id = $1
+         LIMIT 1
+      `,
+      [invite.used_by_user_id]
+    );
+    return q.rows[0] ?? null;
+  }
+
+  // Fallback: if someone already registered with the target email
+  const q = await db.query<UserRow>(
+    `
+      SELECT user_id, email, nickname, created_at
+        FROM auth."user"
+       WHERE lower(email) = lower($1)
+       ORDER BY created_at DESC
+       LIMIT 1
+    `,
+    [invite.email]
+  );
+  return q.rows[0] ?? null;
 }
 
 /**
  * GET /api/user-invite
  * Returns the existing invite (if any) and invited user (if already registered).
  */
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { rows: inviteRows } = await db.query<AdminInviteRow>(
+  const { rows } = await db.query<InviteTokenRow>(
     `
-      SELECT *
-      FROM admin.invites
-      WHERE inviter_user_id = $1
-        AND source = 'user'
-      ORDER BY created_at DESC
-      LIMIT 1
+      SELECT invite_id, email, status, expires_at, used_at, created_at, used_by_user_id
+        FROM auth.invite_token
+       WHERE created_by_user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 1
     `,
-    [user.user_id],
+    [user.user_id]
   );
-  const invite = inviteRows[0] ?? null;
 
-  let invitedUser: InvitedUserRow | null = null;
-  if (invite) {
-    const { rows: invitedRows } = await db.query<InvitedUserRow>(
-      `
-        SELECT user_id, email, nickname, created_at
-        FROM auth."user"
-        WHERE invited_by_user_id = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-      `,
-      [user.user_id],
-    );
-    invitedUser = invitedRows[0] ?? null;
-  }
+  const invite = rows[0] ?? null;
+  const invitedUser = await findInvitedUser(invite);
 
   return NextResponse.json({
-    invite: invite
-      ? {
-          email: invite.email,
-          createdAt: invite.created_at,
-          uses: invite.uses,
-          maxUses: invite.max_uses,
-          consumed: invite.uses >= invite.max_uses,
-        }
-      : null,
+    invite: mapInvite(invite),
     invitedUser: invitedUser
       ? {
           id: invitedUser.user_id,
@@ -95,73 +130,60 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const email = (body.email as string | undefined)?.trim().toLowerCase();
+  const email = body?.email ? normalizeEmail(String(body.email)) : "";
 
   if (!email || !email.includes("@")) {
-    return NextResponse.json(
-      { error: "Invalid email" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid email" }, { status: 400 });
   }
 
-  // Check if user already has a user-generated invite
-  const { rows: existingRows } = await db.query<AdminInviteRow>(
+  // Enforce "one personal invite" rule
+  const { rows: existingRows } = await db.query(
     `
-      SELECT *
-      FROM admin.invites
-      WHERE inviter_user_id = $1
-        AND source = 'user'
-      ORDER BY created_at DESC
-      LIMIT 1
+      SELECT 1
+        FROM auth.invite_token
+       WHERE created_by_user_id = $1
+       LIMIT 1
     `,
-    [user.user_id],
+    [user.user_id]
   );
-  const existingInvite = existingRows[0] ?? null;
 
-  if (existingInvite) {
+  if (existingRows.length > 0) {
     return NextResponse.json(
       { error: "You already used your invite." },
       { status: 400 }
     );
   }
 
-  // Generate token: plain token is only shown & emailed; hash is persisted
-  const token = crypto.randomBytes(32).toString("hex");
-  const tokenHash = hashToken(token);
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);
 
-  // Persist new invite
-  const createdAt = new Date();
-  const { rows: newInviteRows } = await db.query<AdminInviteRow>(
+  const { rows: inserted } = await db.query<InviteTokenRow>(
     `
-      INSERT INTO admin.invites (
+      INSERT INTO auth.invite_token (
         email,
-        token_hash,
-        inviter_user_id,
-        source,
-        max_uses,
-        uses,
-        created_at
+        token,
+        status,
+        expires_at,
+        created_by_user_id
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING email, created_at, uses, max_uses
+      VALUES ($1, $2, 'issued', $3, $4)
+      RETURNING invite_id, email, status, expires_at, used_at, created_at, used_by_user_id
     `,
-    [email, tokenHash, user.user_id, "user", 1, 0, createdAt],
+    [email, tokenHash, expiresAt, user.user_id]
   );
 
-  const baseUrl = env.BASE_URL ?? "https://your-domain.example";
-  const inviteUrl = `${baseUrl}/auth/invite?token=${token}`;
+  const inviteRow = inserted[0];
+  const inviteUrl = buildInviteUrl(rawToken);
 
   await sendInviteEmail({
     to: email,
-      inviterName: user.nickname ?? user.email,
+    inviterName: user.nickname ?? user.email,
     inviteUrl,
   });
 
   return NextResponse.json({
     ok: true,
-    invite: {
-      email,
-      inviteUrl, // for debugging / UI copy, optional
-    },
+    invite: mapInvite(inviteRow),
   });
 }
