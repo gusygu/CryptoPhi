@@ -57,6 +57,7 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   const merged = migrateSettings({ ...current, ...(nextValue as any) });
   const session = await getCurrentSession();
   const isAdmin = !!session?.isAdmin;
+  const userId = session?.userId ?? "anon";
 
   const normalizedCoins = normalizeCoinList(merged.coinUniverse);
   // Only sync global coin universe for admins; regular users keep coins in their own cookie.
@@ -78,6 +79,7 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
       sameSite: "lax" as const,
       path: "/",
       maxAge: ONE_YEAR,
+      // host-only cookie; not scoped to a shared domain
     },
   };
 
