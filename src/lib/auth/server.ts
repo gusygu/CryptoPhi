@@ -16,14 +16,19 @@ function cookieDomainFromEnv(): string | undefined {
     return envDomain;
   }
 
-  // Try to derive from BASE_URL if present (e.g., https://app.cryptophi.xyz)
-  const base = process.env.BASE_URL;
+  // Try to derive from app base URL envs (e.g., https://app.cryptophi.xyz)
+  const base =
+    process.env.APP_BASE_URL ||
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    process.env.BASE_URL;
   if (base) {
     try {
       const u = new URL(base);
       const host = u.hostname;
       if (host && host !== "localhost") return host;
-    } catch {}
+    } catch (err) {
+      console.warn("[auth] failed to parse base URL for cookie domain:", err);
+    }
   }
 
   return undefined;
