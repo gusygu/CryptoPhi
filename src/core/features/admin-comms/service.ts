@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { getPool } from "@/core/db/db";
 import type {
   AdminInviteLink,
@@ -8,6 +9,7 @@ import type {
 const pool = () => getPool();
 
 const ADMIN_WEEKLY_INVITE_LIMIT = 15;
+const ADMIN_INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const APP_BASE_URL =
   process.env.NEXT_PUBLIC_BASE_URL ??
   process.env.APP_BASE_URL ??
@@ -15,6 +17,10 @@ const APP_BASE_URL =
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
+}
+
+function hashInviteToken(token: string) {
+  return createHash("sha256").update(token.trim()).digest("hex");
 }
 
 function cleanBaseUrl(base: string) {
@@ -99,6 +105,7 @@ async function insertAdminInvite(opts: {
   const q = await pool().query<{
     invite_id: string;
     token: string;
+    expires_at: string;
   }>(
     `
     INSERT INTO admin.invites (
@@ -119,11 +126,50 @@ async function insertAdminInvite(opts: {
       gen_random_uuid(),
       now() + interval '14 days'
     )
-    RETURNING invite_id, token
+    RETURNING invite_id, token, expires_at
     `,
     [normalizedTarget, normalizedAdmin]
   );
   return q.rows[0];
+}
+
+async function syncAuthInviteToken(params: {
+  inviteId: string;
+  token: string;
+  email: string;
+  expiresAt?: string | null;
+}) {
+  const { inviteId, token, email, expiresAt } = params;
+  const hashedToken = hashInviteToken(token);
+  const normalizedEmail = normalizeEmail(email);
+  const expires =
+    expiresAt ??
+    new Date(Date.now() + ADMIN_INVITE_TTL_MS).toISOString();
+
+  await pool().query(
+    `
+    INSERT INTO auth.invite_token (
+      invite_id,
+      email,
+      token,
+      status,
+      expires_at
+    )
+    VALUES (
+      $1::uuid,
+      $2::text,
+      $3::text,
+      'issued',
+      $4::timestamptz
+    )
+    ON CONFLICT (invite_id) DO UPDATE
+      SET email = EXCLUDED.email,
+          token = EXCLUDED.token,
+          expires_at = EXCLUDED.expires_at
+      WHERE auth.invite_token.status <> 'used'
+    `,
+    [inviteId, normalizedEmail, hashedToken, expires]
+  );
 }
 
 async function logAdminAction(params: {
@@ -175,8 +221,7 @@ export async function listAdminInviteTemplates(): Promise<AdminInviteTemplate[]>
       subject,
       description
     FROM comms.mail_templates
-    WHERE template_key LIKE 'admin_invite%'
-      AND is_active = true
+    WHERE is_active = true
     ORDER BY subject ASC
     `
   );
@@ -203,6 +248,14 @@ export async function createAdminInviteLink(input: {
     token: invite.token,
     url: linkForToken(invite.token),
   };
+
+  await syncAuthInviteToken({
+    inviteId: invite.invite_id,
+    token: invite.token,
+    email: input.targetEmail,
+    expiresAt: invite.expires_at,
+  });
+
   await logAdminAction({
     actionKind: "admin.invite.link",
     adminEmail: input.adminEmail,
@@ -223,11 +276,15 @@ export async function sendAdminInviteEmail(input: {
   const normalizedAdmin = normalizeEmail(input.adminEmail);
   const normalizedTarget = normalizeEmail(input.toEmail);
 
-  let inviteRow: { invite_id: string; token: string } | null = null;
+  let inviteRow: { invite_id: string; token: string; expires_at: string } | null = null;
   if (input.inviteToken) {
-    const existing = await pool().query<{ invite_id: string; token: string }>(
+    const existing = await pool().query<{
+      invite_id: string;
+      token: string;
+      expires_at: string;
+    }>(
       `
-      SELECT invite_id, token
+      SELECT invite_id, token, expires_at
       FROM admin.invites
       WHERE token = $1::uuid
         AND created_by_role = 'admin'
@@ -263,6 +320,12 @@ export async function sendAdminInviteEmail(input: {
   }
 
   const inviteUrl = linkForToken(inviteRow.token);
+  await syncAuthInviteToken({
+    inviteId: inviteRow.invite_id,
+    token: inviteRow.token,
+    email: normalizedTarget,
+    expiresAt: inviteRow.expires_at,
+  });
 
   await pool().query(
     `
