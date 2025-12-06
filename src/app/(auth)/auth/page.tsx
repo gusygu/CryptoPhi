@@ -9,6 +9,23 @@ import { verifyPassword, createSession, clearSessionCookieAndRevoke, getCurrentU
 import { isEmailSuspended } from "@/lib/auth/suspension";
 import { query } from "@/core/db/db_server";
 
+type SearchParams =
+  | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
+  | URLSearchParams
+  | Record<string, string | string[] | undefined>
+  | null
+  | undefined;
+
+const getParamValue = (params: Awaited<SearchParams>, key: string): string => {
+  if (params && typeof (params as URLSearchParams).get === "function") {
+    const value = (params as URLSearchParams).get(key);
+    return value ?? "";
+  }
+
+  const v = (params as Record<string, string | string[] | undefined> | undefined)?.[key];
+  return Array.isArray(v) ? v[0] : v || "";
+};
+
 // ----------------- server actions (must be (FormData) => Promise<void>) -----------------
 
 export async function loginAction(formData: FormData): Promise<void> {
@@ -57,7 +74,7 @@ export async function logoutAction(_formData: FormData): Promise<void> {
 export default async function AuthPage({
   searchParams,
 }: {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: SearchParams;
 }) {
   const jar = await cookies();
   const sponsorVal = jar.get("sponsor")?.value || "";
@@ -65,9 +82,9 @@ export default async function AuthPage({
   const user = await getCurrentUser();
   const sessionEmail = user?.email ?? null;
 
+  const resolvedParams = await searchParams;
   const getParam = (k: string) => {
-    const v = searchParams?.[k];
-    return Array.isArray(v) ? v[0] : v || "";
+    return getParamValue(resolvedParams, k);
   };
   const ok = getParam("ok");
   const err = getParam("err");

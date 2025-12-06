@@ -2,11 +2,25 @@ import { redirect } from "next/navigation";
 import { getValidInviteByToken, createUserFromInvite } from "@/app/(server)/auth/invites";
 import { createSession } from "@/lib/auth/server";
 
+type SearchParams =
+  | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
+  | URLSearchParams
+  | Record<string, string | string[] | undefined>
+  | null
+  | undefined;
+
 type Props = {
-  searchParams?: {
-    invite?: string;
-    [key: string]: string | string[] | undefined;
-  };
+  searchParams?: SearchParams;
+};
+
+const getParamValue = (params: Awaited<SearchParams>, key: string): string => {
+  if (params && typeof (params as URLSearchParams).get === "function") {
+    const value = (params as URLSearchParams).get(key);
+    return value ?? "";
+  }
+
+  const v = (params as Record<string, string | string[] | undefined> | undefined)?.[key];
+  return Array.isArray(v) ? v[0] : v || "";
 };
 
 async function registerFromInvite(formData: FormData) {
@@ -52,10 +66,8 @@ async function registerFromInvite(formData: FormData) {
 
 
 export default async function RegisterPage({ searchParams }: Props) {
-  const token =
-    typeof searchParams?.invite === "string"
-      ? searchParams.invite.trim()
-      : "";
+  const resolvedParams = await searchParams;
+  const token = getParamValue(resolvedParams, "invite").trim();
 
   if (!token) {
     redirect("/auth?err=missing_invite");

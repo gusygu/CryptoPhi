@@ -8,6 +8,23 @@ import {
   type Wallet,
 } from "@/lib/settings/store";
 
+type SearchParams =
+  | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
+  | URLSearchParams
+  | Record<string, string | string[] | undefined>
+  | null
+  | undefined;
+
+const getParamValue = (params: Awaited<SearchParams>, key: string): string => {
+  if (params && typeof (params as URLSearchParams).get === "function") {
+    const value = (params as URLSearchParams).get(key);
+    return value ?? "";
+  }
+
+  const v = (params as Record<string, string | string[] | undefined> | undefined)?.[key];
+  return Array.isArray(v) ? v[0] : v || "";
+};
+
 function validateWallet(w: Wallet): string | null {
   if (!w.symbol || !/^[A-Z0-9]{2,10}$/.test(w.symbol))
     return "Invalid symbol.";
@@ -53,10 +70,6 @@ async function deleteWalletAction(form: FormData) {
   redirect("/settings/wallets?ok=wallet_removed");
 }
 
-type SearchParams = {
-  [key: string]: string | string[] | undefined;
-};
-
 export default async function WalletsPage({
   searchParams,
 }: {
@@ -66,9 +79,9 @@ export default async function WalletsPage({
   const settings = getUserSettings(session.email);
   const wallets = settings.wallets ?? [];
 
+  const resolvedParams = await searchParams;
   const pick = (k: string) => {
-    const v = searchParams?.[k];
-    return Array.isArray(v) ? v[0] : v || "";
+    return getParamValue(resolvedParams, k);
   };
   const ok = pick("ok");
   const err = pick("err");

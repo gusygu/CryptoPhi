@@ -18,6 +18,23 @@ import {
   type Wallet,
 } from "@/lib/settings/store";
 import { requireUserSession } from "@/app/(server)/auth/session";
+
+type SearchParams =
+  | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
+  | URLSearchParams
+  | Record<string, string | string[] | undefined>
+  | null
+  | undefined;
+
+const getParamValue = (params: Awaited<SearchParams>, key: string): string => {
+  if (params && typeof (params as URLSearchParams).get === "function") {
+    const value = (params as URLSearchParams).get(key);
+    return value ?? "";
+  }
+
+  const v = (params as Record<string, string | string[] | undefined> | undefined)?.[key];
+  return Array.isArray(v) ? v[0] : v || "";
+};
 // ---------- helpers ----------
 const DEV_SESSION_EMAIL =
   process.env.NEXT_PUBLIC_DEV_SESSION_EMAIL ||
@@ -234,7 +251,7 @@ export async function saveParamsAction(form: FormData): Promise<void> {
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: SearchParams;
 }) {
   const session = await requireUserSession();
   const email = session.email;
@@ -242,9 +259,9 @@ export default async function SettingsPage({
   const s: UserSettings = getUserSettings(email);
   const app = await getAppSettings();
 
+  const resolvedParams = await searchParams;
   const pick = (k: string) => {
-    const v = searchParams?.[k];
-    return Array.isArray(v) ? v[0] : v || "";
+    return getParamValue(resolvedParams, k);
   };
   const ok = pick("ok");
   const err = pick("err");

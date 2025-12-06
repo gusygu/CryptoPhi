@@ -4,7 +4,7 @@ import React, { useMemo } from "react";
 import type { ApiMatrixRow } from "./MatricesTable";
 import { FROZEN_STAGE_COLORS, type FrozenStage, withAlpha } from "./colors";
 
-type Ring = "green" | "red" | "grey" | "purple";
+type Ring = "green" | "orange" | "red" | "grey" | "purple";
 type Derivation = "direct" | "inverse" | "bridged";
 
 type Cell = {
@@ -96,6 +96,7 @@ const METRICS: MetricDescriptor[] = [
 const RING_COLOR: Record<Ring, string> = {
   green: "#4ade80",
   red: "#f87171",
+  orange: "#f97316",
   grey: "#94a3b8",
   purple: "#c084fc",
 };
