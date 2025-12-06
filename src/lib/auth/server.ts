@@ -165,19 +165,8 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
 
   const ip = req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const ua = req?.headers.get("user-agent") ?? null;
-  const reqHost =
-    req?.headers.get("host") ?? headers().get("host") ?? null;
-  const configuredDomain = cookieDomainFromEnv();
-  const cookieDomain =
-    configuredDomain && reqHost && reqHost.toLowerCase().endsWith(configuredDomain.toLowerCase())
-      ? configuredDomain
-      : undefined;
-  if (configuredDomain && !cookieDomain) {
-    console.warn(
-      "[auth] skipping configured COOKIE_DOMAIN because it does not match request host",
-      { configuredDomain, reqHost },
-    );
-  }
+  // Force host-only cookies to avoid domain mismatches that lead to rejection
+  const cookieDomain = undefined;
 
   await query(
     `insert into auth.session (user_id, token_hash, expires_at, ip, user_agent)
