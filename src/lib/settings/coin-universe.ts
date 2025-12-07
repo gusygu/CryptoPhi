@@ -110,8 +110,42 @@ export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Prom
       }))
       .filter((entry) => entry.symbol.length > 0);
   } catch (err) {
-    console.warn("[settings] coin universe query failed:", err);
-    return [];
+    console.warn("[settings] coin universe query failed, trying legacy fallback:", err);
+    try {
+      const { rows } = await query<{
+        symbol: string;
+        base_asset: string | null;
+        quote_asset: string | null;
+        enabled: boolean | null;
+        sort_order: number | null;
+      }>(
+        `
+          select
+            symbol,
+            upper(coalesce(base_asset, (public._split_symbol(symbol)).base)) as base_asset,
+            upper(coalesce(quote_asset, (public._split_symbol(symbol)).quote)) as quote_asset,
+            coalesce(enabled, true) as enabled,
+            sort_order
+          from settings.coin_universe
+          ${options.onlyEnabled ? "where coalesce(enabled, true) = true" : ""}
+          order by coalesce(sort_order, $1::int), symbol
+        `,
+        [SORT_SENTINEL]
+      );
+      return rows
+        .filter((row) => row.base_asset && row.quote_asset)
+        .map((row) => ({
+          symbol: row.symbol?.toUpperCase() ?? "",
+          base: row.base_asset!.toUpperCase(),
+          quote: row.quote_asset!.toUpperCase(),
+          enabled: Boolean(row.enabled ?? true),
+          sortOrder: row.sort_order,
+        }))
+        .filter((entry) => entry.symbol.length > 0);
+    } catch (innerErr) {
+      console.warn("[settings] coin universe legacy fallback failed:", innerErr);
+      return [];
+    }
   }
 }
 
