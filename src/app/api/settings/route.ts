@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { getAll, serializeSettingsCookie } from "@/lib/settings/server";
 import { getCurrentSession } from "@/app/(server)/auth/session";
 import { query } from "@/core/db/pool_server";
+import { upsertUserCoinUniverse } from "@/lib/settings/coin-universe";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -74,6 +75,14 @@ export async function PUT(req: NextRequest) {
                     where symbol = any($1::text[])`, [disable]);
 
     await query(`select settings.sync_coin_universe(true, 'USDT')`);
+  } else if (session?.userId) {
+    // Per-user universe override: treat "enable" list as desired set; auto-disable everything else for this user
+    await upsertUserCoinUniverse(session.userId, enable, { autoDisable: true, enable: true });
+    if (disable.length) {
+      // If specific disables provided, remove them from desired set by reapplying without them
+      const desired = enable.filter((s) => !disable.includes(s));
+      await upsertUserCoinUniverse(session.userId, desired, { autoDisable: true, enable: true });
+    }
   }
 
   return NextResponse.json({ ok: true });

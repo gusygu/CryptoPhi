@@ -368,6 +368,171 @@ create index if not exists ix_coin_universe_enabled on coin_universe(enabled);
 comment on table coin_universe is
   'Universe catalog that drives enabled symbols and derived coins.';
 
+-- D.1) USER-SCOPED COIN UNIVERSE (per-user overrides; NULL user = global default)
+create table if not exists coin_universe_user (
+  user_id     uuid not null,
+  symbol      text not null,
+  enabled     boolean not null default true,
+  sort_order  integer,
+  base_asset  text,
+  quote_asset text,
+  metadata    jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  primary key (user_id, symbol)
+);
+
+create index if not exists ix_coin_universe_user_enabled on coin_universe_user(user_id, enabled);
+
+-- RLS: users can only see / mutate their own rows
+alter table if exists settings.coin_universe_user enable row level security;
+
+do $$
+declare
+  pol_r text := 'coin_universe_user_r';
+  pol_w text := 'coin_universe_user_w';
+  tgt_read text := 'PUBLIC';
+  tgt_write text := 'PUBLIC';
+  cur_expr text := 'nullif(current_setting(''app.current_user_id'', true), '''')::uuid';
+begin
+  if exists (select 1 from pg_roles where rolname = 'cp_reader')
+     and exists (select 1 from pg_roles where rolname = 'cp_app')
+     and exists (select 1 from pg_roles where rolname = 'cp_writer')
+     and exists (select 1 from pg_roles where rolname = 'cp_admin') then
+    tgt_read  := 'cp_reader, cp_app, cp_writer, cp_admin';
+    tgt_write := 'cp_app, cp_writer, cp_admin';
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'coin_universe_user' and policyname = pol_r
+  ) then
+    execute format(
+      'create policy %I on settings.coin_universe_user
+         for select
+         to %s
+         using (user_id = %s)',
+      pol_r, tgt_read, cur_expr
+    );
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'coin_universe_user' and policyname = pol_w
+  ) then
+    execute format(
+      'create policy %I on settings.coin_universe_user
+         for all
+         to %s
+         using (user_id = %s)
+         with check (user_id = %s)',
+      pol_w, tgt_write, cur_expr, cur_expr
+    );
+  end if;
+end$$;
+
+-- Resolved view: prefer user overrides, otherwise global defaults
+create or replace view settings.v_coin_universe_resolved as
+with ctx as (
+  select nullif(current_setting('app.current_user_id', true), '')::uuid as user_id
+),
+merged as (
+  -- user-specific rows
+  select cuu.symbol,
+         cuu.base_asset,
+         cuu.quote_asset,
+         cuu.enabled,
+         cuu.sort_order,
+         cuu.metadata,
+         cuu.user_id
+    from settings.coin_universe_user cuu, ctx
+   where ctx.user_id is not null
+     and cuu.user_id = ctx.user_id
+
+  union all
+
+  -- global rows that aren't overridden
+  select cg.symbol,
+         cg.base_asset,
+         cg.quote_asset,
+         cg.enabled,
+         cg.sort_order,
+         cg.metadata,
+         null::uuid as user_id
+    from settings.coin_universe cg, ctx
+   where not exists (
+           select 1
+             from settings.coin_universe_user cuu
+            where ctx.user_id is not null
+              and cuu.user_id = ctx.user_id
+              and cuu.symbol = cg.symbol
+         )
+)
+select * from merged;
+
+-- D.1) USER-SCOPED COIN UNIVERSE (per-user overrides; NULL user = global default)
+create table if not exists coin_universe_user (
+  user_id     uuid not null,
+  symbol      text not null,
+  enabled     boolean not null default true,
+  sort_order  integer,
+  base_asset  text,
+  quote_asset text,
+  metadata    jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  primary key (user_id, symbol)
+);
+
+create index if not exists ix_coin_universe_user_enabled on coin_universe_user(user_id, enabled);
+
+-- RLS: users can only see / mutate their own rows
+alter table if exists settings.coin_universe_user enable row level security;
+
+do $$
+declare
+  pol_r text := 'coin_universe_user_r';
+  pol_w text := 'coin_universe_user_w';
+  tgt_read text := 'PUBLIC';
+  tgt_write text := 'PUBLIC';
+  cur_expr text := 'nullif(current_setting(''app.current_user_id'', true), '''')::uuid';
+begin
+  if exists (select 1 from pg_roles where rolname = 'cp_reader')
+     and exists (select 1 from pg_roles where rolname = 'cp_app')
+     and exists (select 1 from pg_roles where rolname = 'cp_writer')
+     and exists (select 1 from pg_roles where rolname = 'cp_admin') then
+    tgt_read  := 'cp_reader, cp_app, cp_writer, cp_admin';
+    tgt_write := 'cp_app, cp_writer, cp_admin';
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'coin_universe_user' and policyname = pol_r
+  ) then
+    execute format(
+      'create policy %I on settings.coin_universe_user
+         for select
+         to %s
+         using (user_id = %s)',
+      pol_r, tgt_read, cur_expr
+    );
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+     where schemaname = 'settings' and tablename = 'coin_universe_user' and policyname = pol_w
+  ) then
+    execute format(
+      'create policy %I on settings.coin_universe_user
+         for all
+         to %s
+         using (user_id = %s)
+         with check (user_id = %s)',
+      pol_w, tgt_write, cur_expr, cur_expr
+    );
+  end if;
+end$$;
+
 -- E) OPTIONAL MIRROR to market.symbols if it exists (idempotent)
 -- 02_settings.sql
 create or replace function settings.sp_mirror_universe_to_market()

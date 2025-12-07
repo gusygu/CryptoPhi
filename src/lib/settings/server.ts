@@ -8,6 +8,7 @@ import {
   normalizeCoinList,
   recordSettingsCookieSnapshot,
   syncCoinUniverseFromBases,
+  upsertUserCoinUniverse,
 } from "@/lib/settings/coin-universe";
 import { DEFAULT_SETTINGS, migrateSettings, type AppSettings } from "./schema";
 import { resolveCycleSeconds } from "@/core/settings/time";
@@ -28,6 +29,9 @@ function safeParseJSON(value: string | undefined | null): any | null {
 }
 
 export async function getAll(): Promise<AppSettings> {
+  // set request context so DB fetches are user-aware
+  const session = await getCurrentSession();
+
   const jar = await cookies();
   const raw = jar.get(COOKIE_KEY)?.value;
   const parsed = safeParseJSON(raw);
@@ -38,14 +42,15 @@ export async function getAll(): Promise<AppSettings> {
   } catch {
     // keep migrated value on failure
   }
-  const userCoins = normalizeCoinList(settings.coinUniverse);
+  const userCoinsFromCookie = normalizeCoinList(settings.coinUniverse);
   const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
-  // Prefer user-specific coins (cookie), otherwise fall back to DB-enabled universe, then defaults.
-  settings.coinUniverse = userCoins.length
-    ? userCoins
-    : dbCoins.length
-    ? dbCoins
-    : normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
+  // Prefer DB (user overrides resolved by view) then cookie, then defaults.
+  settings.coinUniverse =
+    dbCoins.length
+      ? dbCoins
+      : userCoinsFromCookie.length
+      ? userCoinsFromCookie
+      : normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
   return settings;
 }
 
@@ -60,9 +65,11 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   const userId = session?.userId ?? "anon";
 
   const normalizedCoins = normalizeCoinList(merged.coinUniverse);
-  // Only sync global coin universe for admins; regular users keep coins in their own cookie.
+  // Sync universe: admins affect global, regular users write per-user overrides.
   if (isAdmin) {
     await syncCoinUniverseFromBases(normalizedCoins);
+  } else {
+    await upsertUserCoinUniverse(userId, normalizedCoins, { autoDisable: true, enable: true });
   }
 
   const normalized: AppSettings = {
@@ -126,6 +133,8 @@ export async function setAll(nextValue: unknown): Promise<AppSettings> {
 }
 
 export async function resolveCoinsFromSettings(): Promise<string[]> {
+  // ensure user context is attached so DB view returns per-user rows
+  await getCurrentSession();
   const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
   if (dbCoins.length) return dbCoins;
   return normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);

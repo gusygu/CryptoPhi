@@ -20,6 +20,12 @@ type FetchOptions = {
   onlyEnabled?: boolean;
 };
 
+function ensureUserId(userId: string | null | undefined): string {
+  const u = String(userId ?? "").trim();
+  if (!u) throw new Error("userId is required for this operation");
+  return u;
+}
+
 export function normalizeCoinList(input: unknown): string[] {
   const arr = Array.isArray(input) ? input : [];
   const seen = new Set<string>();
@@ -47,13 +53,46 @@ export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Prom
       sort_order: number | null;
     }>(
       `
+        with ctx as (
+          select nullif(current_setting('app.current_user_id', true), '')::uuid as user_id
+        ),
+        merged as (
+          -- user-specific overrides
+          select
+            cuu.symbol,
+            cuu.base_asset,
+            cuu.quote_asset,
+            cuu.enabled,
+            cuu.sort_order
+          from settings.coin_universe_user cuu, ctx
+          where ctx.user_id is not null
+            and cuu.user_id = ctx.user_id
+
+          union all
+
+          -- global defaults for symbols not overridden by user
+          select
+            cg.symbol,
+            cg.base_asset,
+            cg.quote_asset,
+            cg.enabled,
+            cg.sort_order
+          from settings.coin_universe cg
+          where not exists (
+            select 1
+            from settings.coin_universe_user cuu, ctx
+            where ctx.user_id is not null
+              and cuu.user_id = ctx.user_id
+              and cuu.symbol = cg.symbol
+          )
+        )
         select
           symbol,
           upper(coalesce(base_asset, (public._split_symbol(symbol)).base)) as base,
           upper(coalesce(quote_asset, (public._split_symbol(symbol)).quote)) as quote,
           coalesce(enabled, true) as enabled,
           sort_order
-        from settings.coin_universe
+        from merged
         ${options.onlyEnabled ? "where coalesce(enabled, true) = true" : ""}
         order by coalesce(sort_order, $1::int), symbol
       `,
@@ -74,6 +113,60 @@ export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Prom
     console.warn("[settings] coin universe query failed:", err);
     return [];
   }
+}
+
+/** Replace/insert per-user universe rows; optional autoDisable clears other symbols for that user. */
+export async function upsertUserCoinUniverse(
+  userId: string,
+  symbols: string[],
+  opts: { enable?: boolean; autoDisable?: boolean } = {}
+): Promise<{ enabled: number; disabled: number }> {
+  const uid = ensureUserId(userId);
+  const normalized = normalizeCoinList(symbols).filter((c) => c !== "USDT");
+  const syms = normalized.map((c) => `${c}USDT`);
+  if (!syms.length) return { enabled: 0, disabled: 0 };
+
+  const enable = opts.enable ?? true;
+  const autoDisable = opts.autoDisable ?? true;
+
+  const { rows } = await query<{ enabled_count: number; disabled_count: number }>(
+    `
+      with desired as (
+        select unnest($2::text[]) as symbol
+      ),
+      upserts as (
+        insert into settings.coin_universe_user(user_id, symbol, enabled)
+        select $1::uuid, d.symbol, $3::boolean from desired d
+        on conflict (user_id, symbol) do update
+          set enabled = excluded.enabled,
+              updated_at = now()
+        returning symbol
+      ),
+      disables as (
+        select count(*) as disabled_count
+        from settings.coin_universe_user cuu
+        where cuu.user_id = $1::uuid
+          and $4::boolean = true
+          and cuu.symbol not in (select symbol from desired)
+      )
+      update settings.coin_universe_user cuu
+         set enabled = false,
+             updated_at = now()
+      from disables
+      where cuu.user_id = $1::uuid
+        and $4::boolean = true
+        and cuu.symbol not in (select symbol from desired)
+      returning (select count(*) from upserts) as enabled_count,
+                (select disabled_count from disables limit 1) as disabled_count
+    `,
+    [uid, syms, enable, autoDisable]
+  );
+
+  const res = rows[0];
+  return {
+    enabled: res?.enabled_count ?? 0,
+    disabled: res?.disabled_count ?? 0,
+  };
 }
 
 export async function fetchPairUniversePairs(): Promise<PairUniverseEntry[]> {

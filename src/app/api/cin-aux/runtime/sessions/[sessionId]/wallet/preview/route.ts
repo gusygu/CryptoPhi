@@ -26,7 +26,7 @@ export async function GET(
   const uniRes = await pool.query<{ base_asset: string | null }>(
     `
     SELECT DISTINCT base_asset
-    FROM settings.coin_universe
+    FROM settings.v_coin_universe_resolved
     WHERE enabled = true
     `
   );

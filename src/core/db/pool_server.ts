@@ -111,6 +111,9 @@ async function applyRequestContext(client: PoolClient) {
     ctx?.userId ?? null,
     ctx?.isAdmin ?? false,
   ]);
+  await client.query("select set_config('app.current_user_id', $1, true)", [
+    ctx?.userId ?? null,
+  ]);
   contextual[CLIENT_CTX_PROP] = targetKey;
 }
 

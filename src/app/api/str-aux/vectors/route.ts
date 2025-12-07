@@ -177,7 +177,7 @@ async function getMarketSymbolsFromApi(origin: string): Promise<string[]> {
   try {
     const { rows } = await query(`
       SELECT symbol::text
-      FROM settings.coin_universe
+      FROM settings.v_coin_universe_resolved
       WHERE COALESCE(enabled,true)=true
       ORDER BY symbol
     `);

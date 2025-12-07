@@ -18,7 +18,7 @@ export async function GET() {
               base_asset,
               quote_asset,
               COALESCE(enabled, true) AS enabled
-         FROM settings.coin_universe
+         FROM settings.v_coin_universe_resolved
         ORDER BY sort_order NULLS LAST, symbol`
     );
 

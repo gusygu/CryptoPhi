@@ -451,7 +451,7 @@ export default async function handler(_req: NextApiRequest, res: NextApiResponse
     const sql = `
       SELECT dv.*
       FROM matrices.dyn_values dv
-      JOIN settings.coin_universe cu
+      JOIN settings.v_coin_universe_resolved cu
         ON cu.base_asset = dv.base
        AND cu.quote_asset = dv.quote
        AND cu.enabled = true

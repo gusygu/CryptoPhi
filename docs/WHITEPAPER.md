@@ -21,7 +21,10 @@ This document summarizes the intent, mechanics, and safeguards of CryptoPi Dynam
   - Idiosyncratic %: ratio deltas with a small epsilon to avoid divide-by-zero.
   - Frozen flags: values that remain within tiny deltas (e.g., `1e-7`) across polls to reduce flicker.
   - Mood rollups: averages, bucket counts (positive/negative/neutral), and span (max-min). No advanced statistics.
+ 
 
+ ### Wrong ^^^
+ 
 ## Settings & universe
 - Coin universe is normalized (uppercase, deduped); USDT is always present. Invalid input falls back to previous values.
 - Universe sync creates valid spot symbols and can disable missing entries when requested.
