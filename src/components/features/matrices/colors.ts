@@ -29,8 +29,8 @@ const BENCHMARK_UP_SHADES = ["#bfdbfe", "#93c5fd", "#60a5fa", "#3b82f6", "#1d4ed
 const BENCHMARK_DOWN_SHADES = ["#fed7aa", "#fdba74", "#fb923c", "#f97316", "#c2410c"];
 
 // Purple for freezes/unchanged between cycles
-const FROZEN_RECENT = "#d8b4fe";
-const FROZEN_DEEP = "#7c3aed";
+const FROZEN_RECENT = "#d8b4fe"; // lighter purple (<= 2 cycles)
+const FROZEN_DEEP = "#6b21a8";   // darker purple (>= 2 cycles)
 
 // Amber for near-zero values
 const AMBER_NOISE = "#facc15";
@@ -46,7 +46,7 @@ export const NULL_SENSITIVITY = 1e-9;
 export const FROZEN_STAGE_COLORS: Record<FrozenStage, string> = {
   recent: FROZEN_RECENT,
   mid: FROZEN_DEEP,
-  long: "#5b21b6",
+  long: FROZEN_DEEP,
 };
 
 export function withAlpha(colorInput: string | null | undefined, alpha: number): string {
@@ -129,7 +129,7 @@ export function colorForChange(value: number | null, opts: ColorForChangeOptions
   const v = Number(value);
   const magnitude = Math.abs(v);
 
-  const floor = zeroFloor ?? 1e-9; // decimal sensitivity 1e-9
+  const floor = zeroFloor ?? 1e-8; // decimal/percent sensitivity
   const eps = epsilon ?? floor;
 
   // 2) Near-zero -> amber
@@ -167,7 +167,7 @@ export function colorForBenchmarkDelta(
 
   const delta = Number(value) - prev;
   const magnitude = Math.abs(delta);
-  const floor = zeroFloor ?? 1e-9;
+  const floor = zeroFloor ?? 1e-8;
   const eps = epsilon ?? floor;
   if (magnitude <= eps) return FROZEN_RECENT;
 
@@ -192,7 +192,7 @@ export function colorForMooDelta(
 
   const delta = Number(value) - prev;
   const magnitude = Math.abs(delta);
-  const floor = zeroFloor ?? 1e-9;
+  const floor = zeroFloor ?? 1e-8;
   const eps = epsilon ?? floor;
   if (magnitude <= eps) return FROZEN_RECENT;
 
