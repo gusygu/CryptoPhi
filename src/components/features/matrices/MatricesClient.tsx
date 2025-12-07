@@ -104,7 +104,7 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
 
   return coins.map((base) => {
     const idStage = freezeStageFor("id_pct", base, quote);
-    const benchStage = freezeStageFor("benchmark", base, quote);
+    const benchStage = idStage ?? freezeStageFor("benchmark", base, quote);
     const pct24Stage = freezeStageFor("pct24h", base, quote);
     const refStage = freezeStageFor("pct_ref", base, quote);
     const refValStage = freezeStageFor("ref", base, quote);
@@ -124,10 +124,8 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
     const symbolRing: UiMatrixRow["symbolRing"] =
       previewSet.has(directSymbol)
         ? "green"
-        : previewSet.has(inverseSymbol)
-        ? "orange"
-        : symbolsSet.has(directSymbol) || symbolsSet.has(inverseSymbol)
-        ? "grey"
+        : previewSet.has(inverseSymbol) || derivation === "inverse"
+        ? "red"
         : "grey";
 
     const benchmarkValue = getMatrixValue(benchValues, base, quote);
@@ -148,14 +146,18 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
     const pairRing: UiMatrixRow["ring"] = symbolRing;
 
     // Color fields:
-    //  decimals: zeroFloor = 1e-7
-    //  percentages: zeroFloor = 0.0005 (0.05%)
+    //  decimals: zeroFloor ~ 1e-9 (amber floors at 1e-7)
+    //  percentages: zeroFloor = 1e-7 (0.00001%)
     const prevBenchmark = previousValueFor("benchmark", base, quote);
+    const prevIdPct = previousValueFor("id_pct", base, quote);
     const benchmarkColor =
       prevBenchmark != null
         ? colorForBenchmarkDelta(benchmarkValue, prevBenchmark, {
             frozenStage: benchStage ?? undefined,
+            idFrozenStage: idStage ?? undefined,
             zeroFloor: ZERO_FLOOR_DECIMAL,
+            idPct,
+            prevIdPct,
           })
         : colorForChange(
             benchmarkValue == null ? null : benchmarkValue - 1,
@@ -226,11 +228,11 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
 }
 
 const RING_LEGEND = [
-    { label: "preview direct", color: "#22c55e" },
-    { label: "preview anti-sym", color: "#f97316" },
+    { label: "preview available", color: "#22c55e" },
+    { label: "anti-symmetrized", color: "#ef4444" },
     { label: "bridged/missing", color: "#94a3b8" },
     { label: "frozen cycles", color: "#7c3aed" },
-    { label: "near-flat |value| < 1e-9", color: "#facc15", square: true },
+    { label: "near-flat |value| <= 1e-7", color: "#facc15", square: true },
   ];
 
 function formatTimestamp(ts?: number | null): string {
@@ -782,6 +784,7 @@ export default function MatricesClient() {
   const freezeStageFor = useCallback(
     (metric: string, base: string, quote: string): FrozenStage | null => {
       const streak = freezeMapRef.current.get(`${metric}|${base}|${quote}`) ?? 0;
+      if (streak >= 4) return "long";
       if (streak >= 2) return "mid";
       if (streak >= 1) return "recent";
       return null;
@@ -991,6 +994,7 @@ export default function MatricesClient() {
               symbols={payload?.symbols}
               previewSet={previewSet}
               previousValueFor={previousValueFor}
+              idPctValues={payload?.matrices?.id_pct?.values}
             />
           ))}
         </section>

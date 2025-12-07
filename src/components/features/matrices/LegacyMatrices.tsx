@@ -95,8 +95,8 @@ const METRICS: MetricDescriptor[] = [
 
 const RING_COLOR: Record<Ring, string> = {
   green: "#4ade80",
-  red: "#f87171",
-  orange: "#f97316",
+  red: "#ef4444",
+  orange: "#ef4444",
   grey: "#94a3b8",
   purple: "#c084fc",
 };

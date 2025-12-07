@@ -29,11 +29,15 @@ const BENCHMARK_UP_SHADES = ["#bfdbfe", "#93c5fd", "#60a5fa", "#3b82f6", "#1d4ed
 const BENCHMARK_DOWN_SHADES = ["#fed7aa", "#fdba74", "#fb923c", "#f97316", "#c2410c"];
 
 // Purple for freezes/unchanged between cycles
-const FROZEN_RECENT = "#d8b4fe"; // lighter purple (<= 2 cycles)
-const FROZEN_DEEP = "#6b21a8";   // darker purple (>= 2 cycles)
+const FROZEN_RECENT = "#d8b4fe"; // light purple (first cycles)
+const FROZEN_MID = "#a855f7";    // medium purple (2-3 cycles)
+const FROZEN_DEEP = "#4c1d95";   // darker purple (> 3 cycles)
 
 // Amber for near-zero values
 const AMBER_NOISE = "#facc15";
+
+const AMBER_THRESHOLD = 1e-7;
+const GRADIENT_RATIO_MAX = 1e6;
 
 /** Backwards-compatible color aliases (legacy imports still expect these names). */
 export const COLOR_POSITIVE_SHADES = POSITIVE_SHADES;
@@ -45,7 +49,7 @@ export const NULL_SENSITIVITY = 1e-9;
 
 export const FROZEN_STAGE_COLORS: Record<FrozenStage, string> = {
   recent: FROZEN_RECENT,
-  mid: FROZEN_DEEP,
+  mid: FROZEN_MID,
   long: FROZEN_DEEP,
 };
 
@@ -86,7 +90,7 @@ export type ColorForChangeOptions = {
   frozenStage?: FrozenStage | null;
   /**
    * "Near-zero" threshold -> amber.
-   * Defaults to 1e-9 for decimal-valued matrices.
+   * We clamp to at least 1e-7 to highlight tiny moves.
    * For percentages (pct24h / pct_ref) you can pass e.g. 1e-7 (0.0000001).
    */
   zeroFloor?: number;
@@ -96,13 +100,13 @@ export type ColorForChangeOptions = {
   epsilon?: number;
 };
 
-const tierFromRatio = (ratio: number) => {
-  let tier = 0;
-  if (ratio > 10) tier = 1;
-  if (ratio > 100) tier = 2;
-  if (ratio > 1_000) tier = 3;
-  if (ratio > 10_000) tier = 4;
-  return tier;
+const paletteIndexFromMagnitude = (magnitude: number, floor: number, paletteLength: number) => {
+  const safeFloor = Math.max(floor, 1e-12);
+  const ratio = magnitude / safeFloor;
+  // Normalize log-scale ratio into palette slots so small changes still move the color
+  const normalized = Math.min(1, Math.log10(Math.max(1, ratio)) / Math.log10(GRADIENT_RATIO_MAX));
+  const idx = Math.round(normalized * Math.max(0, paletteLength - 1));
+  return Math.max(0, Math.min(paletteLength - 1, idx));
 };
 
 /**
@@ -131,19 +135,16 @@ export function colorForChange(value: number | null, opts: ColorForChangeOptions
 
   const floor = zeroFloor ?? 1e-8; // decimal/percent sensitivity
   const eps = epsilon ?? floor;
+  const amberThreshold = Math.max(AMBER_THRESHOLD, eps);
 
   // 2) Near-zero -> amber
-  if (magnitude <= eps) {
+  if (magnitude <= amberThreshold) {
     return AMBER_NOISE;
   }
 
-  // 3) Pick a tier index based on how many orders of magnitude we are above floor
-  const ratio = magnitude / floor;
-  const tier = tierFromRatio(ratio);
-
   const positive = v > 0;
   const palette = positive ? POSITIVE_SHADES : NEGATIVE_SHADES;
-  const index = Math.min(palette.length - 1, Math.max(0, tier));
+  const index = paletteIndexFromMagnitude(magnitude, floor, palette.length);
 
   return palette[index] ?? (positive ? POSITIVE_SHADES[0]! : NEGATIVE_SHADES[0]!);
 }
@@ -154,13 +155,33 @@ type DeltaColorOptions = {
   epsilon?: number;
 };
 
+type BenchmarkColorOptions = DeltaColorOptions & {
+  idPct?: number | null;
+  prevIdPct?: number | null;
+  idFrozenStage?: FrozenStage | null;
+};
+
+const detectSignFlip = (
+  prevValue: number | null | undefined,
+  nextValue: number | null | undefined
+): "minusToPlus" | "plusToMinus" | null => {
+  if (prevValue == null || nextValue == null) return null;
+  if (!Number.isFinite(prevValue) || !Number.isFinite(nextValue)) return null;
+  const prevSign = Math.sign(prevValue);
+  const nextSign = Math.sign(nextValue);
+  if (prevSign < 0 && nextSign > 0) return "minusToPlus";
+  if (prevSign > 0 && nextSign < 0) return "plusToMinus";
+  return null;
+};
+
 export function colorForBenchmarkDelta(
   value: number | null,
   prevValue: number | null,
-  opts: DeltaColorOptions = {}
+  opts: BenchmarkColorOptions = {}
 ): string {
-  const { frozenStage, zeroFloor, epsilon } = opts;
-  if (frozenStage) return FROZEN_STAGE_COLORS[frozenStage] ?? FROZEN_DEEP;
+  const { frozenStage, zeroFloor, epsilon, idPct, prevIdPct, idFrozenStage } = opts;
+  const stage = idFrozenStage ?? frozenStage;
+  if (stage) return FROZEN_STAGE_COLORS[stage] ?? FROZEN_DEEP;
   if (value == null || !Number.isFinite(value)) return MUTED;
   const prev = Number(prevValue);
   if (!Number.isFinite(prev)) return MUTED;
@@ -169,13 +190,19 @@ export function colorForBenchmarkDelta(
   const magnitude = Math.abs(delta);
   const floor = zeroFloor ?? 1e-8;
   const eps = epsilon ?? floor;
-  if (magnitude <= eps) return FROZEN_RECENT;
+  const amberThreshold = Math.max(AMBER_THRESHOLD, eps);
 
-  const ratio = magnitude / floor;
-  const tier = tierFromRatio(ratio);
+  if (magnitude <= amberThreshold) return AMBER_NOISE;
+
+  const signFlip = detectSignFlip(prevIdPct, idPct);
+  if (signFlip) {
+    const palette = signFlip === "minusToPlus" ? BENCHMARK_UP_SHADES : BENCHMARK_DOWN_SHADES;
+    const idx = paletteIndexFromMagnitude(Math.abs(idPct ?? 0), floor, palette.length);
+    return palette[idx] ?? palette[0]!;
+  }
 
   const palette = delta >= 0 ? BENCHMARK_UP_SHADES : BENCHMARK_DOWN_SHADES;
-  const index = Math.min(palette.length - 1, Math.max(0, tier));
+  const index = paletteIndexFromMagnitude(magnitude, floor, palette.length);
   return palette[index] ?? palette[0]!;
 }
 
@@ -194,13 +221,11 @@ export function colorForMooDelta(
   const magnitude = Math.abs(delta);
   const floor = zeroFloor ?? 1e-8;
   const eps = epsilon ?? floor;
-  if (magnitude <= eps) return FROZEN_RECENT;
-
-  const ratio = magnitude / floor;
-  const tier = tierFromRatio(ratio);
+  const amberThreshold = Math.max(AMBER_THRESHOLD, eps);
+  if (magnitude <= amberThreshold) return AMBER_NOISE;
 
   const palette = delta >= 0 ? BENCHMARK_UP_SHADES : BENCHMARK_DOWN_SHADES;
-  const index = Math.min(palette.length - 1, Math.max(0, tier));
+  const index = paletteIndexFromMagnitude(magnitude, floor, palette.length);
   return palette[index] ?? palette[0]!;
 }
 
@@ -214,6 +239,7 @@ export const MATRICES_COLORS = {
   BENCHMARK_UP_SHADES,
   BENCHMARK_DOWN_SHADES,
   FROZEN_RECENT,
+  FROZEN_MID,
   FROZEN_DEEP,
   AMBER_NOISE,
   COLOR_POSITIVE_SHADES,

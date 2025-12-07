@@ -58,9 +58,7 @@ type Props = {
 const ringClass = (ring: Ring) =>
   ring === "green"
     ? "ring ring-emerald-400"
-    : ring === "orange"
-    ? "ring ring-amber-400"
-    : ring === "red"
+    : ring === "orange" || ring === "red"
     ? "ring ring-rose-500"
     : ring === "purple"
     ? "ring ring-purple-400"
@@ -68,10 +66,10 @@ const ringClass = (ring: Ring) =>
 
 const RING_COLOR_HEX: Record<Ring, string> = {
   green: "#22c55e",
-  orange: "#f97316",
+  orange: "#ef4444",
   grey: "#94a3b8",
   purple: "#7c3aed",
-  red: "#fb7185",
+  red: "#ef4444",
 };
 
 const fmtPercent = (value: number | null, digits = 4) =>
@@ -346,6 +344,7 @@ export type MatrixGridTableProps = {
   symbols?: string[];
   previewSet?: Set<string>;
   previousValueFor?: (metric: string, base: string, quote: string) => number | null;
+  idPctValues?: MatrixValues;
 };
 
 const matrixValue = (
@@ -371,6 +370,7 @@ export function MatrixGridTable({
   symbols,
   previewSet,
   previousValueFor,
+  idPctValues,
 }: MatrixGridTableProps) {
   const preview = useMemo(() => previewSet ?? new Set<string>(), [previewSet]);
   const symbolsKey = useMemo(
@@ -435,12 +435,21 @@ export function MatrixGridTable({
                   }
                   const val = matrixValue(values, base, quote);
                   const stage = freezeStageFor?.(metric, base, quote) ?? null;
+                  const idStage = freezeStageFor?.("id_pct", base, quote) ?? null;
                   const prevVal = previousValueFor?.(metric, base, quote) ?? null;
+                  const prevIdPct = previousValueFor?.("id_pct", base, quote) ?? null;
+                  const idPctForBenchmark =
+                    metric === "benchmark"
+                      ? matrixValue(idPctValues, base, quote)
+                      : null;
                   const color =
                     metric === "benchmark"
                       ? colorForBenchmarkDelta(val, prevVal, {
                           frozenStage: stage ?? undefined,
+                          idFrozenStage: idStage ?? undefined,
                           zeroFloor,
+                          idPct: idPctForBenchmark,
+                          prevIdPct,
                         })
                       : colorForChange(val, {
                           frozenStage: stage ?? undefined,
@@ -451,9 +460,9 @@ export function MatrixGridTable({
                   const ring: Ring =
                     preview.has(directSymbol)
                       ? "green"
-                      : preview.has(inverseSymbol)
-                      ? "orange"
-                      : symbolsSet.has(directSymbol) || symbolsSet.has(inverseSymbol)
+                      : preview.has(inverseSymbol) || symbolsSet.has(inverseSymbol)
+                      ? "red"
+                      : symbolsSet.has(directSymbol)
                       ? "grey"
                       : "grey";
                   const ringHex = RING_COLOR_HEX[ring] ?? RING_COLOR_HEX.grey;

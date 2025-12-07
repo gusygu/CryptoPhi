@@ -48,7 +48,7 @@ export const FROZEN_BACKGROUND = withAlpha(COLOR_FROZEN, 0.5);
 
 export const PREVIEW_RING_COLORS = {
   direct: "#34d399",
-  inverse: "#f97316",
+  inverse: "#ef4444",
   missing: "#94a3b8",
   frozen: COLOR_FROZEN,
 } as const;
