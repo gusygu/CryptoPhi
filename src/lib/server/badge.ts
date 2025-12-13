@@ -5,6 +5,7 @@ import { headers, cookies } from "next/headers";
 type ResolveBadgeOptions = {
   allowLegacy?: boolean;
   defaultToGlobal?: boolean;
+  useCookies?: boolean;
 };
 
 export async function resolveRequestBadge(
@@ -12,17 +13,19 @@ export async function resolveRequestBadge(
 ): Promise<string | null> {
   const allowLegacy = opts.allowLegacy ?? false;
   const defaultToGlobal = opts.defaultToGlobal ?? true;
+  const useCookies = opts.useCookies ?? true;
 
   try {
     const h = await headers();
-    const c = await cookies();
+    const c = useCookies ? await cookies() : null;
     const headerBadge = (h.get("x-app-session") || "").trim();
-    const cookieBadge = (c.get("sessionId")?.value || "").trim();
-    const legacyBadge = allowLegacy
-      ? (c.get("appSessionId")?.value ||
-         c.get("app_session_id")?.value ||
-         "").trim()
-      : "";
+    const cookieBadge = useCookies ? (c?.get("sessionId")?.value || "").trim() : "";
+    const legacyBadge =
+      useCookies && allowLegacy
+        ? (c?.get("appSessionId")?.value ||
+           c?.get("app_session_id")?.value ||
+           "").trim()
+        : "";
 
     const candidate = headerBadge || cookieBadge || legacyBadge;
     if (candidate) return candidate;

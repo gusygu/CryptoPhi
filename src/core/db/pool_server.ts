@@ -65,7 +65,7 @@ const CLIENT_CTX_PROP = Symbol("cp_request_ctx");
 type ContextAwareClient = PoolClient & { [CLIENT_CTX_PROP]?: string };
 async function currentRequestSessionId(): Promise<string | null> {
   try {
-    const badge = await resolveRequestBadge({ defaultToGlobal: false });
+    const badge = await resolveRequestBadge({ defaultToGlobal: false, useCookies: false });
     return badge ? badge : null;
   } catch {
     return null;
@@ -107,27 +107,15 @@ export function getDb(): Pool {
   return ensurePool();
 }
 
-async function getCookieJarSafe() {
-  try {
-    return await cookies();
-  } catch {
-    return null;
-  }
-}
-
 async function applyRequestContext(client: PoolClient) {
   const ctx = getServerRequestContext();
   const userId = ctx?.userId ?? null;
-  const jar = await getCookieJarSafe();
-  const hasAuthCookie = !!jar?.get("session")?.value;
   const headerSession = await currentRequestSessionId();
   const hasExplicitBadge = !!headerSession && headerSession !== "global";
   const sessionId = hasExplicitBadge
     ? headerSession!
     : userId
     ? `user:${userId}`
-    : hasAuthCookie
-    ? null
     : SESSION_ID;
   let resolvedUserId = userId;
   // If no userId is set but we have a session token, try to resolve via user_space.session_map
@@ -151,7 +139,7 @@ async function applyRequestContext(client: PoolClient) {
     return;
   }
   // Authenticated but missing badge -> early error (no silent global)
-  if (hasAuthCookie && !hasExplicitBadge) {
+  if (resolvedUserId && !hasExplicitBadge) {
     throw new Error("missing_session_badge");
   }
 
