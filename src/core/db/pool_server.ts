@@ -1,5 +1,5 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
-import { getServerRequestContext } from "@/lib/server/request-context";
+import { getServerRequestContext, type ServerRequestContext } from "@/lib/server/request-context";
 import { getAppSessionId, registerAppSessionBoot } from "@/core/system/appSession";
 
 /**
@@ -97,17 +97,21 @@ export function getDb(): Pool {
   return ensurePool();
 }
 
-async function applyRequestContext(client: PoolClient) {
-  const ctx = getServerRequestContext();
-  const userId = ctx?.userId ?? null;
-  const sessionId = ctx?.sessionId ?? null;
-  const isAdmin = ctx?.isAdmin ?? false;
+type RequestContextOverride = {
+  userId?: string | null;
+  sessionId?: string | null;
+  isAdmin?: boolean;
+};
+
+async function applyRequestContext(client: PoolClient, override?: RequestContextOverride) {
+  const ctx = override ?? getServerRequestContext() ?? { userId: null, sessionId: null, isAdmin: false };
+  const userId = ctx.userId ?? null;
+  const sessionId = ctx.sessionId ?? null;
+  const isAdmin = ctx.isAdmin ?? false;
   if (userId && !sessionId) {
     throw new Error("missing_session_badge");
   }
-  const effectiveSession =
-    sessionId ??
-    (userId ? null : SESSION_ID);
+  const effectiveSession = sessionId ?? (userId ? null : SESSION_ID);
   const targetKey =
     (userId || isAdmin)
       ? `${userId ?? ""}|${isAdmin ? "1" : "0"}|${effectiveSession ?? ""}`
@@ -117,43 +121,52 @@ async function applyRequestContext(client: PoolClient) {
     return;
   }
 
-  if (userId && effectiveSession) {
-    // Use a single transaction so LOCAL/SESSION GUCs set by set_request_context are visible to bootstrap.
-    await client.query("BEGIN");
-    try {
-      await client.query("select auth.set_request_context($1,$2,$3)", [
-        userId,
-        isAdmin,
-        effectiveSession,
-      ]);
-      await client.query("select user_space.ensure_session_coin_universe_bootstrapped()");
-      await client.query("COMMIT");
-    } catch (err) {
-      try { await client.query("ROLLBACK"); } catch {}
-      throw err;
-    }
-  } else {
+  await client.query("BEGIN");
+  try {
     await client.query("select auth.set_request_context($1,$2,$3)", [
       userId,
       isAdmin,
       effectiveSession,
     ]);
+    const { rows } = await client.query<{ sid: string | null; uid: string | null }>(
+      `select nullif(current_setting('app.current_session_id', true), '') as sid,
+              nullif(current_setting('app.current_user_id', true), '')   as uid`
+    );
+    const sid = rows[0]?.sid ?? null;
+    const uid = rows[0]?.uid ?? null;
+    if (userId && !sid) {
+      throw new Error("db_context_missing_session_id");
+    }
+    if (userId && !uid) {
+      throw new Error("db_context_missing_user_id");
+    }
+    if (userId && effectiveSession) {
+      await client.query("select user_space.ensure_session_coin_universe_bootstrapped()");
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw err;
   }
+
   contextual[CLIENT_CTX_PROP] = targetKey;
 }
 
 function patchPoolQuery(pool: Pool) {
   const originalQuery = pool.query;
   pool.query = (async (text: any, params?: any) => {
-    return withClient((client) => client.query(text, params));
+    return withClient(undefined, (client) => client.query(text, params));
   }) as typeof originalQuery;
 }
 
 /* ──────────────── Query helpers ──────────────── */
-export async function withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function withClient<T>(
+  ctx: RequestContextOverride | undefined,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await ensurePool().connect();
   try {
-    await applyRequestContext(client);
+    await applyRequestContext(client, ctx);
     return await fn(client);
   } finally {
     client.release();
@@ -163,8 +176,9 @@ export async function withClient<T>(fn: (client: PoolClient) => Promise<T>): Pro
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: any[],
+  ctx?: RequestContextOverride,
 ): Promise<QueryResult<T>> {
-  return withClient((client) => client.query<T>(text, params));
+  return withClient(ctx, (client) => client.query<T>(text, params));
 }
 
 export const db: Pool = ensurePool();

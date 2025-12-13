@@ -34,7 +34,9 @@ export async function GET(
   const dbCtx = await query<{ session_id: string | null; user_id: string | null }>(
     `select
        nullif(current_setting('app.current_session_id', true), '') as session_id,
-       nullif(current_setting('app.current_user_id', true), '')   as user_id`
+       nullif(current_setting('app.current_user_id', true), '')   as user_id`,
+    [],
+    { userId: session.userId, sessionId: effectiveBadge, isAdmin: session.isAdmin },
   );
 
   return NextResponse.json({
