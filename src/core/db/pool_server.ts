@@ -1,4 +1,5 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
+import { cookies } from "next/headers";
 import { getServerRequestContext } from "@/lib/server/request-context";
 import { resolveRequestBadge } from "@/lib/server/badge";
 import { getAppSessionId, registerAppSessionBoot } from "@/core/system/appSession";
@@ -64,7 +65,7 @@ const CLIENT_CTX_PROP = Symbol("cp_request_ctx");
 type ContextAwareClient = PoolClient & { [CLIENT_CTX_PROP]?: string };
 async function currentRequestSessionId(): Promise<string | null> {
   try {
-    const badge = await resolveRequestBadge();
+    const badge = await resolveRequestBadge({ defaultToGlobal: false });
     return badge ? badge : null;
   } catch {
     return null;
@@ -106,15 +107,27 @@ export function getDb(): Pool {
   return ensurePool();
 }
 
+async function getCookieJarSafe() {
+  try {
+    return await cookies();
+  } catch {
+    return null;
+  }
+}
+
 async function applyRequestContext(client: PoolClient) {
   const ctx = getServerRequestContext();
   const userId = ctx?.userId ?? null;
+  const jar = await getCookieJarSafe();
+  const hasAuthCookie = !!jar?.get("session")?.value;
   const headerSession = await currentRequestSessionId();
   const hasExplicitBadge = !!headerSession && headerSession !== "global";
   const sessionId = hasExplicitBadge
     ? headerSession!
     : userId
     ? `user:${userId}`
+    : hasAuthCookie
+    ? null
     : SESSION_ID;
   let resolvedUserId = userId;
   // If no userId is set but we have a session token, try to resolve via user_space.session_map
@@ -137,6 +150,11 @@ async function applyRequestContext(client: PoolClient) {
   if (contextual[CLIENT_CTX_PROP] === targetKey) {
     return;
   }
+  // Authenticated but missing badge -> early error (no silent global)
+  if (hasAuthCookie && !hasExplicitBadge) {
+    throw new Error("missing_session_badge");
+  }
+
   if (resolvedUserId && hasExplicitBadge) {
     // Use a single transaction so LOCAL/SESSION GUCs set by set_request_context are visible to bootstrap.
     await client.query("BEGIN");

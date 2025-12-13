@@ -14,8 +14,6 @@ const readSessionId = (): string | null => {
   const parts = raw.split(";").map((p) => p.trim());
   for (const p of parts) {
     if (p.startsWith("sessionId=")) return decodeURIComponent(p.slice("sessionId=".length));
-    if (p.startsWith("appSessionId=")) return decodeURIComponent(p.slice("appSessionId=".length));
-    if (p.startsWith("app_session_id=")) return decodeURIComponent(p.slice("app_session_id=".length));
   }
   return null;
 };
@@ -44,7 +42,13 @@ export function RefreshKick({ badge, minIntervalMs = 60_000 }: Props) {
 
     if (shouldOpening) {
       const openingUrl = `/api/${encodeURIComponent(b)}/system/opening`;
-      fetch(openingUrl, { method: "POST", keepalive: true, signal: openingController.signal }).catch(
+      const sid = sessionId || b;
+      fetch(openingUrl, {
+        method: "POST",
+        keepalive: true,
+        signal: openingController.signal,
+        headers: sid ? { "x-app-session": sid } : undefined,
+      }).catch(
         () => {
           /* non-blocking */
         }
@@ -54,7 +58,13 @@ export function RefreshKick({ badge, minIntervalMs = 60_000 }: Props) {
 
     if (shouldRefresh) {
       const refreshUrl = `/api/${encodeURIComponent(b)}/system/refresh`;
-      fetch(refreshUrl, { method: "POST", keepalive: true, signal: refreshController.signal }).catch(
+      const sid = sessionId || b;
+      fetch(refreshUrl, {
+        method: "POST",
+        keepalive: true,
+        signal: refreshController.signal,
+        headers: sid ? { "x-app-session": sid } : undefined,
+      }).catch(
         () => {
           /* swallow errors; UI should still render */
         }

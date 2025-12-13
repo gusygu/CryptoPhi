@@ -84,6 +84,13 @@ function resolveBadgeFromCookies(jar: Awaited<ReturnType<typeof cookies>>): stri
   return trimmed || "global";
 }
 
+async function redirectWithBadge(path: string) {
+  const jar = await cookies();
+  const badge = resolveBadgeFromCookies(jar);
+  const suffix = path.startsWith("/") ? path.slice(1) : path;
+  redirect(`/${encodeURIComponent(badge)}/${suffix}`);
+}
+
 // ---------- server actions ----------
 export async function saveProfileAction(form: FormData): Promise<void> {
   "use server";
@@ -95,7 +102,7 @@ export async function saveProfileAction(form: FormData): Promise<void> {
   const language = String(form.get("language") || "").trim();
 
   setUserSettings(email, { profile: { nickname, timezone, language } });
-  redirect("/settings?ok=profile");
+  await redirectWithBadge("/settings?ok=profile");
 }
 
 export async function addWalletAction(form: FormData): Promise<void> {
@@ -112,10 +119,10 @@ export async function addWalletAction(form: FormData): Promise<void> {
   };
 
   const err = validateWallet(wallet);
-  if (err) redirect(`/settings?err=${encodeURIComponent(err)}`);
+  if (err) await redirectWithBadge(`/settings?err=${encodeURIComponent(err)}`);
 
   upsertWallet(email, wallet);
-  redirect("/settings?ok=wallet_added");
+  await redirectWithBadge("/settings?ok=wallet_added");
 }
 
 export async function deleteWalletAction(form: FormData): Promise<void> {
@@ -125,7 +132,7 @@ export async function deleteWalletAction(form: FormData): Promise<void> {
 
   const id = String(form.get("walletId") || "");
   removeWallet(email, id);
-  redirect("/settings?ok=wallet_removed");
+  await redirectWithBadge("/settings?ok=wallet_removed");
 }
 
 /** Save Universe (cookie-backed AppSettings) + lightweight engine knobs that belong to AppSettings */
@@ -192,7 +199,7 @@ export async function saveUniverseAction(form: FormData): Promise<void> {
     }
   }
 
-  redirect("/settings?ok=universe");
+  await redirectWithBadge("/settings?ok=universe");
 }
 
 // little helper to keep the server-action signature ergonomics
@@ -201,7 +208,7 @@ async function setAll(
   next: Awaited<ReturnType<typeof getAppSettings>>
 ) {
   await setter(next);
-  redirect("/settings?ok=universe");
+  await redirectWithBadge("/settings?ok=universe");
 }
 
 export async function saveTimingAction(form: FormData): Promise<void> {
@@ -272,7 +279,7 @@ export async function saveParamsAction(form: FormData): Promise<void> {
     },
   });
 
-  redirect("/settings?ok=params");
+  await redirectWithBadge("/settings?ok=params");
 }
 
 // ---------- page ----------
