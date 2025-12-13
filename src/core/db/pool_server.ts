@@ -1,7 +1,5 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
-import { cookies } from "next/headers";
 import { getServerRequestContext } from "@/lib/server/request-context";
-import { resolveRequestBadge } from "@/lib/server/badge";
 import { getAppSessionId, registerAppSessionBoot } from "@/core/system/appSession";
 
 /**
@@ -63,14 +61,6 @@ declare global {
 
 const CLIENT_CTX_PROP = Symbol("cp_request_ctx");
 type ContextAwareClient = PoolClient & { [CLIENT_CTX_PROP]?: string };
-async function currentRequestSessionId(): Promise<string | null> {
-  try {
-    const badge = await resolveRequestBadge({ defaultToGlobal: false, useCookies: false });
-    return badge ? badge : null;
-  } catch {
-    return null;
-  }
-}
 
 function ensurePool(): Pool {
   if (!global.__core_pg_pool__) {
@@ -110,47 +100,31 @@ export function getDb(): Pool {
 async function applyRequestContext(client: PoolClient) {
   const ctx = getServerRequestContext();
   const userId = ctx?.userId ?? null;
-  const headerSession = await currentRequestSessionId();
-  const hasExplicitBadge = !!headerSession && headerSession !== "global";
-  const sessionId = hasExplicitBadge
-    ? headerSession!
-    : userId
-    ? `user:${userId}`
-    : SESSION_ID;
-  let resolvedUserId = userId;
-  // If no userId is set but we have a session token, try to resolve via user_space.session_map
-  if (!resolvedUserId && hasExplicitBadge) {
-    try {
-      const { rows } = await client.query<{ user_id: string | null }>(
-        `select user_id from user_space.session_map where session_id = $1 limit 1`,
-        [headerSession]
-      );
-      resolvedUserId = rows[0]?.user_id ?? null;
-    } catch {
-      // ignore resolution failures; continue with null user
-    }
+  const sessionId = ctx?.sessionId ?? null;
+  const isAdmin = ctx?.isAdmin ?? false;
+  if (userId && !sessionId) {
+    throw new Error("missing_session_badge");
   }
+  const effectiveSession =
+    sessionId ??
+    (userId ? null : SESSION_ID);
   const targetKey =
-    (resolvedUserId || ctx?.isAdmin)
-      ? `${resolvedUserId ?? ""}|${ctx?.isAdmin ? "1" : "0"}|${sessionId}`
-      : `__anon__|${sessionId}`;
+    (userId || isAdmin)
+      ? `${userId ?? ""}|${isAdmin ? "1" : "0"}|${effectiveSession ?? ""}`
+      : `__anon__|${effectiveSession ?? ""}`;
   const contextual = client as ContextAwareClient;
   if (contextual[CLIENT_CTX_PROP] === targetKey) {
     return;
   }
-  // Authenticated but missing badge -> early error (no silent global)
-  if (resolvedUserId && !hasExplicitBadge) {
-    throw new Error("missing_session_badge");
-  }
 
-  if (resolvedUserId && hasExplicitBadge) {
+  if (userId && effectiveSession) {
     // Use a single transaction so LOCAL/SESSION GUCs set by set_request_context are visible to bootstrap.
     await client.query("BEGIN");
     try {
       await client.query("select auth.set_request_context($1,$2,$3)", [
-        resolvedUserId,
-        ctx?.isAdmin ?? false,
-        sessionId,
+        userId,
+        isAdmin,
+        effectiveSession,
       ]);
       await client.query("select user_space.ensure_session_coin_universe_bootstrapped()");
       await client.query("COMMIT");
@@ -160,9 +134,9 @@ async function applyRequestContext(client: PoolClient) {
     }
   } else {
     await client.query("select auth.set_request_context($1,$2,$3)", [
-      resolvedUserId,
-      ctx?.isAdmin ?? false,
-      sessionId,
+      userId,
+      isAdmin,
+      effectiveSession,
     ]);
   }
   contextual[CLIENT_CTX_PROP] = targetKey;

@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type ServerRequestContext = {
   userId: string | null;
   isAdmin: boolean;
+  sessionId: string | null;
 };
 
 const storage = new AsyncLocalStorage<ServerRequestContext | null>();
@@ -22,14 +23,20 @@ export function runWithServerRequestContext<T>(
   return storage.run(ctx ?? null, fn);
 }
 
-export function adoptSessionRequestContext(session: { userId: string; isAdmin: boolean } | null) {
+export function adoptSessionRequestContext(
+  session: { userId: string; isAdmin: boolean; sessionId?: string | null } | null,
+) {
   if (session) {
-    setServerRequestContext({ userId: session.userId, isAdmin: session.isAdmin });
+    setServerRequestContext({
+      userId: session.userId,
+      isAdmin: session.isAdmin,
+      sessionId: session.sessionId ?? null,
+    });
   } else {
     setServerRequestContext(null);
   }
 }
 
 export function assumeAdminRequestContext() {
-  setServerRequestContext({ userId: null, isAdmin: true });
+  setServerRequestContext({ userId: null, isAdmin: true, sessionId: null });
 }

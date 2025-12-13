@@ -46,8 +46,11 @@ export async function getCurrentSession(): Promise<UserSession | null> {
   const session = mapUserToSession(user);
   if (session?.userId) {
     await ensureAppSessionCookie(session.userId);
+    const badge = await resolveRequestBadge({ defaultToGlobal: false });
+    adoptSessionRequestContext({ ...session, sessionId: badge });
+  } else {
+    adoptSessionRequestContext(null);
   }
-  adoptSessionRequestContext(session);
   return session;
 }
 
@@ -68,6 +71,7 @@ export async function requireUserSession(): Promise<UserSession> {
     badge = (jar.get("sessionId")?.value || "").trim() || null;
   }
   if (!badge) redirect("/auth?err=login_required");
+  adoptSessionRequestContext({ ...session, sessionId: badge });
   try {
     const { rows } = await query<{ ok: boolean }>(
       `select true as ok

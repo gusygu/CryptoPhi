@@ -19,6 +19,7 @@ import {
 } from "@/lib/settings/store";
 import { upsertSessionCoinUniverse } from "@/lib/settings/coin-universe";
 import { requireUserSession } from "@/app/(server)/auth/session";
+import { query } from "@/core/db/pool_server";
 
 type SearchParams =
   | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
@@ -193,7 +194,27 @@ export async function saveUniverseAction(form: FormData): Promise<void> {
     // Per-user overrides only; do not touch global universe
     await setAppSettings(next);
     try {
-      await upsertSessionCoinUniverse(badge, nextCoins, { enable: true });
+      const before = await query<{ cnt: number }>(
+        `select count(*)::int as cnt from user_space.session_coin_universe where session_id = $1`,
+        [badge],
+      );
+      const res = await upsertSessionCoinUniverse(badge, nextCoins, { enable: true });
+      const after = await query<{ cnt: number; sid: string | null; uid: string | null }>(
+        `select count(*)::int as cnt,
+                nullif(current_setting('app.current_session_id', true), '') as sid,
+                nullif(current_setting('app.current_user_id', true), '')   as uid
+           from user_space.session_coin_universe
+          where session_id = $1`,
+        [badge],
+      );
+      console.log("[settings] upsertSessionCoinUniverse", {
+        badge,
+        enabled: res.enabled,
+        before: before.rows[0]?.cnt ?? 0,
+        after: after.rows[0]?.cnt ?? 0,
+        db_session_id: after.rows[0]?.sid ?? null,
+        db_user_id: after.rows[0]?.uid ?? null,
+      });
     } catch (err) {
       console.error("[settings] user coin universe update failed", err);
     }
