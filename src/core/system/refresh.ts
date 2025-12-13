@@ -2,6 +2,7 @@
 import { fetchCoinUniverseEntries, fetchPairUniverseCoins } from "@/lib/settings/coin-universe";
 import { ingestTickerSymbols, ingestKlinesSymbols } from "./tasks";
 import { query } from "@/core/db/db_server";
+import { liveFromDbTickers } from "@/core/features/matrices/liveFromDb";
 import { liveFromSources } from "@/core/features/matrices/liveFromSources";
 import {
   configureBenchmarkProviders,
@@ -16,6 +17,7 @@ import {
 import type { MatrixGridObject, MatrixType } from "@/core/db/db";
 import { fetchOpeningGridFromView } from "@/core/features/matrices/opening";
 import { fetchSnapshotBenchmarkGrid } from "@/core/features/matrices/snapshot";
+import { fetchTradeBenchmarkGrid } from "@/core/features/matrices/trade";
 import { getAppSessionId } from "@/core/system/appSession";
 
 export type RefreshStepResult = {
@@ -40,13 +42,14 @@ type RefreshOptions = {
   recordTelemetry?: boolean;
   pollerId?: string;
   window?: string;
+  appSessionId?: string | null;
 };
 
 const KNOWN_QUOTES = ["USDT", "FDUSD", "USDC", "TUSD", "BUSD", "USD", "BTC", "ETH", "BNB"] as const;
 const REFRESH_WINDOW = process.env.MATRICES_REFRESH_WINDOW ?? "1h";
-const APP_SESSION_ID = getAppSessionId();
 
 export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<SystemRefreshResult> {
+  const appSessionId = opts.appSessionId ?? getAppSessionId();
   const universeEntries = opts.symbols
     ? opts.symbols.map((sym) => {
         const { base, quote } = splitSymbol(sym);
@@ -110,35 +113,60 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       ? dedupeCoins([...pairUniverseCoins, ...fallbackCoins])
       : [...fallbackCoins];
 
-    const live = await liveFromSources(coins);
-    const liveCoins = [...live.coins];
+    // Build matrices from DB tickers; fall back to live sources if DB is empty.
+    let liveSource = "db:ticker_latest";
+    let live = await liveFromDbTickers(coins).catch((err) => {
+      console.warn("[system/refresh] liveFromDbTickers failed, fallback to sources:", err);
+      return null;
+    });
+    if (!live || !live.coins.length) {
+      liveSource = "api:liveFromSources";
+      live = await liveFromSources(coins);
+      // Warm ticker_latest for next ticks (best-effort).
+      void ingestTickerSymbols(
+        coins
+          .map((c) => `${c}USDT`)
+          .filter((sym) => sym && sym !== "USDTUSDT")
+      ).catch(() => {});
+    }
+
+    const liveCoins = [...(live?.coins ?? [])];
     if (!liveCoins.length) {
-      throw new Error("liveFromSources returned no coins");
+      throw new Error("no live matrices available (db + api fallback failed)");
     }
 
     const tsMs = live.matrices.benchmark.ts;
     const openingMark = await persistLiveMatricesSlice({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       coins: liveCoins,
       tsMs,
       benchmark: live.matrices.benchmark.values,
       pct24h: live.matrices.pct24h.values,
-      idemPrefix: `refresh:${opts.pollerId ?? "default"}`,
+      idemPrefix: `refresh:${opts.pollerId ?? "default"}:${liveSource}`,
     });
+
+    let snapshotTs: number | null = null;
+    let tradeTs: number | null = null;
 
     configureBenchmarkProviders({
       getPrev: (matrixType, base, quote, beforeTs) =>
-        getPrevValue(matrixType, base.toUpperCase(), quote.toUpperCase(), beforeTs, APP_SESSION_ID),
+        getPrevValue(matrixType, base.toUpperCase(), quote.toUpperCase(), beforeTs, appSessionId),
       fetchOpeningGrid: (coinsUniverse, nowTsParam) =>
         fetchOpeningGridFromView({
           coins: coinsUniverse,
-          appSessionId: APP_SESSION_ID,
+          appSessionId,
           window: opts.window ?? REFRESH_WINDOW,
           openingTs: undefined,
         }),
       fetchSnapshotGrid: async (coinsUniverse, nowTsParam) => {
         const snap = await fetchSnapshotBenchmarkGrid(coinsUniverse);
+        snapshotTs = snap.ts ?? null;
         return { ts: snap.ts ?? nowTsParam, grid: snap.grid };
+      },
+      fetchTradeGrid: async (coinsUniverse, nowTsParam) => {
+        const trade = await fetchTradeBenchmarkGrid(coinsUniverse, appSessionId);
+        tradeTs = trade.ts ?? null;
+        return { ts: trade.ts ?? nowTsParam, grid: trade.grid };
       },
     });
 
@@ -149,7 +177,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
     });
 
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "pct_drv",
       tsMs,
       coins: liveCoins,
@@ -159,7 +187,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "pct_ref",
       tsMs,
       coins: liveCoins,
@@ -169,7 +197,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "ref",
       tsMs,
       coins: liveCoins,
@@ -179,7 +207,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "delta",
       tsMs,
       coins: liveCoins,
@@ -189,7 +217,7 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       openingTs: openingMark.openingTs,
     });
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "pct_snap",
       tsMs,
       coins: liveCoins,
@@ -197,9 +225,11 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       meta: { source: "derived@refresh" },
       openingStamp: openingMark.openingStamp,
       openingTs: openingMark.openingTs,
+      snapshotStamp: snapshotTs != null,
+      snapshotTs,
     });
     await persistDerivedGrid({
-      appSessionId: APP_SESSION_ID,
+      appSessionId,
       matrixType: "snap",
       tsMs,
       coins: liveCoins,
@@ -207,6 +237,32 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       meta: { source: "derived@refresh" },
       openingStamp: openingMark.openingStamp,
       openingTs: openingMark.openingTs,
+      snapshotStamp: snapshotTs != null,
+      snapshotTs,
+    });
+    await persistDerivedGrid({
+      appSessionId,
+      matrixType: "pct_traded",
+      tsMs,
+      coins: liveCoins,
+      grid: derived.pct_traded,
+      meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
+      tradeStamp: tradeTs != null,
+      tradeTs,
+    });
+    await persistDerivedGrid({
+      appSessionId,
+      matrixType: "traded",
+      tsMs,
+      coins: liveCoins,
+      grid: derived.traded,
+      meta: { source: "derived@refresh" },
+      openingStamp: openingMark.openingStamp,
+      openingTs: openingMark.openingTs,
+      tradeStamp: tradeTs != null,
+      tradeTs,
     });
 
     return { coins: liveCoins.length, ts: tsMs };
@@ -293,6 +349,10 @@ async function persistDerivedGrid(opts: {
   meta?: any;
   openingStamp?: boolean;
   openingTs?: number;
+  snapshotStamp?: boolean;
+  snapshotTs?: number | null;
+  tradeStamp?: boolean;
+  tradeTs?: number | null;
 }) {
   const values = gridToValues(opts.coins, opts.grid);
   await stageMatrixGrid({
@@ -304,6 +364,10 @@ async function persistDerivedGrid(opts: {
     meta: opts.meta,
     openingStamp: opts.openingStamp,
     openingTs: opts.openingTs,
+    snapshotStamp: opts.snapshotStamp,
+    snapshotTs: opts.snapshotTs ?? undefined,
+    tradeStamp: opts.tradeStamp,
+    tradeTs: opts.tradeTs ?? undefined,
   });
   await commitMatrixGrid({
     appSessionId: opts.appSessionId,

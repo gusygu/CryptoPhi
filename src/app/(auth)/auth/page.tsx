@@ -61,7 +61,9 @@ export async function loginAction(formData: FormData): Promise<void> {
   }
 
   await createSession(row.user_id);
-  redirect("/auth?ok=login");
+  const jar = await cookies();
+  const badge = (jar.get("sessionId")?.value || "").trim() || "global";
+  redirect(`/${badge}/dashboard`);
 }
 
 export async function logoutAction(_formData: FormData): Promise<void> {

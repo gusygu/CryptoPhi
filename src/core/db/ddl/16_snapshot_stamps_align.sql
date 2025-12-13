@@ -1,0 +1,2 @@
+-- 16_snapshot_stamps_align.sql
+-- Snapshot/opening stamp alignment relocated to user-driven bucket (see 51_snapshot_stamps_align.sql).

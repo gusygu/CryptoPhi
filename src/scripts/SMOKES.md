@@ -1,6 +1,39 @@
-# SMOKES — CryptoPill Core
+# SMOKES - CryptoPill Core
 
 > Replace `<DB_URL>`, `<SESSION_ID>` as needed.
+
+## CIN ingestion suite (entry → DB → pipeline → API)
+
+```
+CIN_RUNTIME_SESSION_ID=<SESSION_ID> pnpm tsx src/scripts/smoke/cin-ingestion-suite.ts
+# or via package.json scripts
+CIN_RUNTIME_SESSION_ID=<SESSION_ID> pnpm smoke:cin:suite
+# full sequence (entrypoint, db, job tick, pipeline, core, client)
+CIN_RUNTIME_SESSION_ID=<SESSION_ID> pnpm smoke:cin:all
+```
+
+Options:
+- `CIN_SMOKE_BASE_URL` (default `http://localhost:3000`)
+- `CIN_SMOKE_ACCOUNT_SCOPE` (default `__env__`)
+- `CIN_SMOKE_MAX_STALE_MINUTES` (default `60`)
+- `CIN_SMOKE_REQUIRE_BINANCE=1` to fail if Binance account check is unreachable
+- `CIN_SMOKE_SKIP_API=1` to skip client API calls
+
+Checks: core tables exist, runtime session is registered, Binance entrypoint reachable, server health route up, account_trades are fresh, pipeline (import moves + balances), client API (balances + moves).
+
+## Matrices / str-aux ingestion smokes
+
+- Persist + gaps recompute (DB only):  
+  `pnpm smoke:mat:persist`
+- IDHR bins sanity (DB only):  
+  `pnpm smoke:mat:idhr` (env: `SYMBOL`, `LIMIT`, `DATABASE_URL`/`POSTGRES_URL`)
+- Sampling HTTP endpoint (requires dev/prod server running):  
+  `pnpm smoke:mat:sampling` (env: `ORIGIN`, `SYMBOLS`, `LIMIT`)
+- End-to-end ingestion + matrices (pulls klines/tickers via public API and checks latest matrices):  
+  `pnpm smoke:mat:ingestion`  
+  Env: `MATRIX_SMOKE_SYMBOLS` (comma list), `MATRIX_SMOKE_MAX_SYMBOLS` (default 3), `MATRIX_SMOKE_KLINES_INTERVAL` (default 1m), `MATRIX_SMOKE_WINDOW` (default 1h), `MATRIX_SMOKE_SKIP_MATRICES=1` to only check market.klines.
+- Full matrices bundle:  
+  `pnpm smoke:mat:all`
 
 ## 0) Schema & Seeds
 

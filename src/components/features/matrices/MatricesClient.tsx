@@ -37,12 +37,15 @@ type MatricesLatestResponse = {
     delta?: { values?: MatrixValues };
     pct_snap?: { values?: MatrixValues };
     snap?: { values?: MatrixValues };
+    pct_traded?: { values?: MatrixValues };
+    traded?: { values?: MatrixValues };
   };
   // optional top-level ts
   ts?: number;
   meta?: {
     openingTs?: number | null;
     snapshotTs?: number | null;
+    tradeTs?: number | null;
   };
 };
 
@@ -100,6 +103,8 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
   const pctSnapValues = payload.matrices?.pct_snap?.values ?? {};
   const snapValues = payload.matrices?.snap?.values ?? {};
   const deltaValues = payload.matrices?.delta?.values ?? {};
+  const pctTradedValues = payload.matrices?.pct_traded?.values ?? {};
+  const tradedValues = payload.matrices?.traded?.values ?? {};
   const benchValues = benchmarkSlice?.values ?? {};
 
   return coins.map((base) => {
@@ -110,8 +115,21 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
     const refValStage = freezeStageFor("ref", base, quote);
     const snapPctStage = freezeStageFor("pct_snap", base, quote);
     const snapStage = freezeStageFor("snap", base, quote);
+    const tradePctStage = freezeStageFor("pct_traded", base, quote);
+    const tradeStage = freezeStageFor("traded", base, quote);
     const deltaStage = freezeStageFor("delta", base, quote);
-    const frozen = Boolean(idStage || benchStage || pct24Stage || refStage || refValStage || snapPctStage || snapStage || deltaStage);
+    const frozen = Boolean(
+      idStage ||
+        benchStage ||
+        pct24Stage ||
+        refStage ||
+        refValStage ||
+        snapPctStage ||
+        snapStage ||
+        tradePctStage ||
+        tradeStage ||
+        deltaStage
+    );
 
     const directSymbol = `${base}${quote}`;
     const inverseSymbol = `${quote}${base}`;
@@ -137,6 +155,8 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
     const pctSnap = getMatrixValue(pctSnapValues, base, quote);
     const snapVal = getMatrixValue(snapValues, base, quote);
     const deltaVal = getMatrixValue(deltaValues, base, quote);
+    const pctTraded = getMatrixValue(pctTradedValues, base, quote);
+    const tradedVal = getMatrixValue(tradedValues, base, quote);
 
     // Trade-direction ring:
     //  frozen → purple
@@ -191,6 +211,14 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
       frozenStage: snapStage ?? undefined,
       zeroFloor: ZERO_FLOOR_DECIMAL,
     });
+    const pctTradedColor = colorForChange(pctTraded, {
+      frozenStage: tradePctStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_PERCENT,
+    });
+    const tradedColor = colorForChange(tradedVal, {
+      frozenStage: tradeStage ?? undefined,
+      zeroFloor: ZERO_FLOOR_DECIMAL,
+    });
     const deltaColor = colorForChange(deltaVal, {
       frozenStage: deltaStage ?? undefined,
       zeroFloor: ZERO_FLOOR_DECIMAL,
@@ -218,6 +246,13 @@ function buildMatrixRows({ payload, previewSet, freezeStageFor, previousValueFor
           : {
               top: { value: pctSnap, color: pctSnapColor, derivation, ring: pairRing },
               bottom: { value: snapVal, color: snapColor, derivation, ring: pairRing },
+            },
+      trade_block:
+        pctTraded == null && tradedVal == null
+          ? undefined
+          : {
+              top: { value: pctTraded, color: pctTradedColor, derivation, ring: pairRing },
+              bottom: { value: tradedVal, color: tradedColor, derivation, ring: pairRing },
             },
       delta: { value: deltaVal, color: deltaColor, derivation, ring: pairRing },
       id_pct: { value: idPct, color: idColor, derivation, ring: pairRing },
@@ -728,6 +763,8 @@ export default function MatricesClient() {
       ["ref", payload.matrices?.ref?.values],
       ["pct_snap", payload.matrices?.pct_snap?.values],
       ["snap", payload.matrices?.snap?.values],
+      ["pct_traded", payload.matrices?.pct_traded?.values],
+      ["traded", payload.matrices?.traded?.values],
     ];
 
     const nextFreeze = new Map(freezeMapRef.current);
@@ -849,11 +886,13 @@ export default function MatricesClient() {
   const openingTs = payload?.meta?.openingTs ?? null;
   const cycleTs = benchmarkTs ?? payload?.ts ?? null;
   const snapTs = payload?.meta?.snapshotTs ?? payload?.ts ?? cycleTs ?? null;
+  const tradeTs = payload?.meta?.tradeTs ?? null;
   const windowLabel = (payload?.window ?? "30m") as "15m" | "30m" | "1h";
   const windowMs = WINDOW_TO_MS[windowLabel] ?? WINDOW_TO_MS["30m"];
   const openingOrdinal = ordinalFromTimestamp(openingTs, windowMs);
   const cycleOrdinal = relativeOrdinal(cycleTs, openingTs, windowMs);
   const snapOrdinal = relativeOrdinal(snapTs, openingTs, windowMs);
+  const tradeOrdinal = relativeOrdinal(tradeTs, openingTs, windowMs);
 
   const statusLabel = payload?.ok ? "operational" : "awaiting signal";
   const statusAccent = payload?.ok ? "#4ade80" : "#facc15";
@@ -882,6 +921,12 @@ export default function MatricesClient() {
       accent: "#c084fc",
     },
     {
+      label: "Trade stamp",
+      value: formatTimestamp(tradeTs),
+      hint: tradeOrdinal != null ? `Δ#${tradeOrdinal}` : "pending",
+      accent: "#22c55e",
+    },
+    {
       label: "Mood regime",
       value: mood.label,
       hint: formatDecimal(mood.score, 7),
@@ -908,6 +953,8 @@ export default function MatricesClient() {
         { key: "ref", label: "ref", values: m.ref?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
         { key: "pct_snap", label: "pct_snap", values: m.pct_snap?.values, isPercent: true, zeroFloor: ZERO_FLOOR_PERCENT },
         { key: "snap", label: "snap", values: m.snap?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
+        { key: "pct_traded", label: "pct_traded", values: m.pct_traded?.values, isPercent: true, zeroFloor: ZERO_FLOOR_PERCENT },
+        { key: "traded", label: "traded", values: m.traded?.values, isPercent: false, zeroFloor: ZERO_FLOOR_DECIMAL },
       ].filter((entry) => entry.values);
     },
     [payload?.matrices]

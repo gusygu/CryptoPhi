@@ -34,10 +34,16 @@ type ProviderSnapshotGrid = (
   nowTs: number
 ) => Promise<{ ts: number | null; grid: (number | null)[][] }>;
 
+type ProviderTradeGrid = (
+  coins: string[],
+  nowTs: number
+) => Promise<{ ts: number | null; grid: (number | null)[][] }>;
+
 type Providers = {
   getPrev: ProviderGetPrev;
   fetchOpeningGrid: ProviderOpeningGrid;
   fetchSnapshotGrid?: ProviderSnapshotGrid;
+  fetchTradeGrid?: ProviderTradeGrid;
 };
 
 let PROV: Providers | null = null;
@@ -87,6 +93,8 @@ export type ComputeOutput = {
   delta: (number | null)[][];
   pct_snap: (number | null)[][];
   snap: (number | null)[][];
+  pct_traded: (number | null)[][];
+  traded: (number | null)[][];
 };
 
 /**
@@ -103,6 +111,8 @@ export type ComputeOutput = {
  *  delta    = bm_new - bm_open * (1 + ref)
  *  pct_snap = (bm_snap - bm_new)/bm_snap
  *  snap     = pct_snap * (1 + id_pct)
+ *  pct_traded = (bm_trade - bm_new)/bm_trade
+ *  traded     = pct_traded * (1 + id_pct)
  */
 export async function computeFromDbAndLive(input: ComputeInput): Promise<ComputeOutput> {
   if (!PROV) throw new Error("Providers not configured. Call configureBenchmarkProviders(...) first.");
@@ -117,6 +127,8 @@ export async function computeFromDbAndLive(input: ComputeInput): Promise<Compute
   const delta = newGrid<Num>(n, null);
   const pct_snap = newGrid<Num>(n, null);
   const snap = newGrid<Num>(n, null);
+  const pct_traded = newGrid<Num>(n, null);
+  const traded = newGrid<Num>(n, null);
 
   // 1) Opening grid (persisted opening from v_dyn_matrices via opening.ts)
   const opening = await PROV.fetchOpeningGrid(coins, nowTs);
@@ -124,6 +136,8 @@ export async function computeFromDbAndLive(input: ComputeInput): Promise<Compute
 
   const snapshot = PROV.fetchSnapshotGrid ? await PROV.fetchSnapshotGrid(coins, nowTs) : null;
   const snapGrid = snapshot?.grid;
+  const trade = PROV.fetchTradeGrid ? await PROV.fetchTradeGrid(coins, nowTs) : null;
+  const tradeGrid = trade?.grid;
 
   // 2) prev(benchmark) and prev(id_pct) per pair
   for (let i = 0; i < n; i++) {
@@ -174,9 +188,20 @@ export async function computeFromDbAndLive(input: ComputeInput): Promise<Compute
         pctSnap == null || idNow == null
           ? null
           : ((1 + idNow) * pctSnap);
+
+      const tradeVal = tradeGrid?.[i]?.[j] ?? null;
+      const pctTraded =
+        tradeVal == null || bmNow == null
+          ? null
+          : safeDiv(tradeVal - bmNow, tradeVal);
+      pct_traded[i][j] = pctTraded;
+      traded[i][j] =
+        pctTraded == null || idNow == null
+          ? null
+          : ((1 + idNow) * pctTraded);
     }
   }
 
-  return { id_pct, pct_drv, pct_ref, ref, delta, pct_snap, snap };
+  return { id_pct, pct_drv, pct_ref, ref, delta, pct_snap, snap, pct_traded, traded };
 }
 

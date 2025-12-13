@@ -56,23 +56,65 @@ const SettingsCtx = createContext<ProviderCtx>({
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [badge, setBadge] = useState<string>("global");
+  const storageKey = useMemo(() => `${STORAGE_KEY}:${badge || "global"}`, [badge]);
+  const cookieName = useMemo(() => `${STORAGE_KEY}_${badge || "global"}`, [badge]);
 
   // Initial hydration (localStorage → cookie fetch), plus cross-tab sync
+  // Resolve badge from cookies first; fall back to path only if it looks like a badge
   useEffect(() => {
+    if (typeof window === "undefined") return;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const cookies = document.cookie.split(";").map((p) => p.trim());
+      const grab = (name: string) =>
+        cookies.find((p) => p.startsWith(`${name}=`))?.split("=", 2)[1] ?? "";
+      const canonical = grab("sessionId");
+      const legacy = grab("appSessionId") || grab("app_session_id");
+
+      if (canonical) {
+        setBadge(decodeURIComponent(canonical) || "global");
+        return;
+      }
+
+      if (legacy) {
+        const decoded = decodeURIComponent(legacy) || "global";
+        document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+        document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+        document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+        setBadge(decoded);
+        return;
+      }
+
+      // fallback: if the first path segment is not a known page root, treat it as badge
+      const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+      const reserved = new Set(["api", "settings", "snapshot", "matrices", "dynamics", "auth", "docs", "info", "admin", "audit", "mgmt", "cin-aux", "str-aux", "trade"]);
+      if (seg && !reserved.has(seg)) {
+        setBadge(seg);
+        return;
+      }
+    } catch {
+      setBadge("global");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!badge) return;
+    try {
+      const raw = localStorage.getItem(storageKey);
       if (raw) setSettings(makeAppSettings(JSON.parse(raw)));
     } catch {}
     (async () => {
       try {
         const remote = await fetchClientSettings();
         setSettings(remote);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
+        localStorage.setItem(storageKey, JSON.stringify(remote));
+        // keep a per-badge cookie copy for SSR/other tabs (not authoritative)
+        document.cookie = `${cookieName}=${encodeURIComponent(JSON.stringify(remote))}; path=/; SameSite=Lax`;
       } catch {}
     })();
 
     const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
+      if (e.key === storageKey && e.newValue) {
         try {
           setSettings(makeAppSettings(JSON.parse(e.newValue)));
         } catch {}
@@ -80,26 +122,28 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [storageKey, badge]);
 
   const persistRoundTrip = useCallback(async (clean: AppSettings) => {
     // local copy first
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
+    localStorage.setItem(storageKey, JSON.stringify(clean));
     setSettings(clean);
 
     // server cookie
     try {
-      const res = await fetch("/api/settings", {
+      const res = await fetch(`/api/${encodeURIComponent(badge || "global")}/settings`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ settings: clean }),
         cache: "no-store",
+        credentials: "include",
       });
       // If server normalized anything, re-pull to match SSR cookie exactly
       if (res.ok) {
         const refreshed = await fetchClientSettings();
         setSettings(refreshed);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(refreshed));
+        localStorage.setItem(storageKey, JSON.stringify(refreshed));
+        document.cookie = `${cookieName}=${encodeURIComponent(JSON.stringify(refreshed))}; path=/; SameSite=Lax`;
       }
     } catch {}
 
@@ -124,17 +168,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const reload = useCallback(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(storageKey);
       if (raw) setSettings(makeAppSettings(JSON.parse(raw)));
     } catch {}
     (async () => {
       try {
         const remote = await fetchClientSettings();
         setSettings(remote);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
+        localStorage.setItem(storageKey, JSON.stringify(remote));
       } catch {}
     })();
-  }, []);
+  }, [storageKey]);
 
   // ---- Focused helpers (map cleanly to schema.ts areas) ----
   const setCoinUniverse = useCallback(async (coins: string[]) => {

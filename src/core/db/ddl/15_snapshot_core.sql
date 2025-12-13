@@ -1,0 +1,2 @@
+-- 15_snapshot_core.sql
+-- Snapshot pack relocated to user-driven bucket (see 50_snapshot_core.sql).

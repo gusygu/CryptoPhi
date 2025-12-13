@@ -27,6 +27,36 @@ interface ApiCreate {
   error?: string;
 }
 
+async function readJsonSafe<T = any>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const snippet = text.slice(0, 400).trim();
+    throw new Error(snippet || `HTTP ${res.status}`);
+  }
+}
+
+function readBadgeFromCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  for (const p of parts) {
+    if (p.startsWith("sessionId=")) return decodeURIComponent(p.slice("sessionId=".length));
+    if (p.startsWith("appSessionId=")) return decodeURIComponent(p.slice("appSessionId=".length));
+    if (p.startsWith("app_session_id=")) return decodeURIComponent(p.slice("app_session_id=".length));
+  }
+  return null;
+}
+
+function readBadgeFromPath(): string | null {
+  if (typeof window === "undefined") return null;
+  const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+  if (!seg || ["auth", "docs", "info", "api"].includes(seg)) return null;
+  return seg;
+}
+
 type SnapshotPanel = {
   title: string;
   accent: string;
@@ -271,14 +301,28 @@ export default function SnapshotAlbumPage() {
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
   const [scopeFilter, setScopeFilter] = useState<string[]>([]);
+  const [badge, setBadge] = useState<string>("global");
+
+  const snapshotUrl = useMemo(() => {
+    const safe = (badge || "global").trim() || "global";
+    return `/api/${encodeURIComponent(safe)}/snapshot`;
+  }, [badge]);
 
   async function loadSnapshots() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/snapshot", { cache: "no-store" });
-      const data: ApiList = await res.json();
-      if (!data.ok) throw new Error(data.error || "Failed to load");
+      const res = await fetch(snapshotUrl, {
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          "x-app-session": badge,
+        },
+      });
+      const data: ApiList = await readJsonSafe(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || `Failed to load (status ${res.status})`);
+      }
       setSnapshots(data.snapshots ?? []);
     } catch (e: any) {
       setError(String(e?.message ?? e));
@@ -288,20 +332,34 @@ export default function SnapshotAlbumPage() {
   }
 
   useEffect(() => {
-    loadSnapshots();
+    const fromPath = readBadgeFromPath();
+    const fromCookie = readBadgeFromCookie();
+    const resolved = (fromPath || fromCookie || "global").trim() || "global";
+    setBadge(resolved);
   }, []);
+
+  useEffect(() => {
+    loadSnapshots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [badge]);
 
   async function handleCreate() {
     setCreating(true);
     setError(null);
     try {
-      const res = await fetch("/api/snapshot", {
+      const res = await fetch(snapshotUrl, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-app-session": badge,
+        },
+        credentials: "include",
         body: JSON.stringify({}),
       });
-      const data: ApiCreate = await res.json();
-      if (!data.ok) throw new Error(data.error || "Failed to create");
+      const data: ApiCreate = await readJsonSafe(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || `Failed to create (status ${res.status})`);
+      }
       await loadSnapshots();
     } catch (e: any) {
       setError(String(e?.message ?? e));

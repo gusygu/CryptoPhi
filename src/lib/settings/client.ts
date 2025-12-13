@@ -4,8 +4,50 @@
 import { useEffect, useState } from "react";
 import { migrateSettings, type AppSettings } from "@/lib/settings/schema";
 
+function readSessionId(): string | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  const grab = (name: string) =>
+    parts.find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+  const canonical = grab("sessionId");
+  const legacy = grab("appSessionId") || grab("app_session_id");
+  if (canonical) return decodeURIComponent(canonical);
+  if (legacy) {
+    const decoded = decodeURIComponent(legacy);
+    document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+    document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+    document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+    return decoded;
+  }
+  return null;
+}
+
+function readBadge(): string {
+  if (typeof window === "undefined") return "global";
+  const sid = readSessionId();
+  if (sid) return sid;
+
+  // As a fallback, if the first path segment looks like a badge (not a known page root)
+  const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+  const reserved = new Set(["api", "settings", "snapshot", "matrices", "dynamics", "auth", "docs", "info", "admin", "audit", "mgmt", "cin-aux", "str-aux", "trade"]);
+  if (seg && !reserved.has(seg)) return seg;
+  return "global";
+}
+
+function sessionHeaders(init?: HeadersInit): Headers {
+  const h = new Headers(init ?? {});
+  const sid = readSessionId();
+  if (sid) {
+    h.set("x-app-session", sid);
+  }
+  return h;
+}
+
 export async function fetchClientSettings(): Promise<AppSettings> {
-  const res = await fetch("/api/settings", { cache: "no-store" });
+  const badge = readBadge();
+  const path = `/api/${encodeURIComponent(badge)}/settings`;
+  const res = await fetch(path, { cache: "no-store", headers: sessionHeaders(), credentials: "include" });
   if (!res.ok) throw new Error(`GET /api/settings ${res.status}`);
   const payload = (await res.json()) as { settings?: unknown };
   if (!payload?.settings) throw new Error("GET /api/settings missing payload");

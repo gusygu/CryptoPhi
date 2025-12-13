@@ -17,6 +17,7 @@ import {
   type UserSettings,
   type Wallet,
 } from "@/lib/settings/store";
+import { upsertSessionCoinUniverse } from "@/lib/settings/coin-universe";
 import { requireUserSession } from "@/app/(server)/auth/session";
 
 type SearchParams =
@@ -67,6 +68,22 @@ function validateWallet(w: Wallet): string | null {
   return null;
 }
 
+function resolveBadgeFromCookies(jar: Awaited<ReturnType<typeof cookies>>): string {
+  const legacy =
+    jar.get("appSessionId")?.value ||
+    jar.get("app_session_id")?.value ||
+    "";
+  const canonical = jar.get("sessionId")?.value || legacy || "";
+  const trimmed = String(canonical ?? "").trim();
+  try {
+    jar.delete("appSessionId");
+    jar.delete("app_session_id");
+  } catch {
+    /* best-effort cleanup */
+  }
+  return trimmed || "global";
+}
+
 // ---------- server actions ----------
 export async function saveProfileAction(form: FormData): Promise<void> {
   "use server";
@@ -115,7 +132,9 @@ export async function deleteWalletAction(form: FormData): Promise<void> {
 export async function saveUniverseAction(form: FormData): Promise<void> {
   "use server";
   const jar = await cookies();
-  ensureLoginEmail(jar.get("session")?.value);
+  const email = ensureLoginEmail(jar.get("session")?.value);
+  const session = await requireUserSession();
+  const badge = resolveBadgeFromCookies(jar);
 
   const app = await getAppSettings(); // ✅ define app
 
@@ -152,16 +171,25 @@ export async function saveUniverseAction(form: FormData): Promise<void> {
     params: { values: { ...app.params.values, epsilon, eta, iota } },
   };
 
-  await setAppSettings(next);
-
-  try {
-    await syncCoinUniverseFromBinance({
-      explicitCoins: nextCoins,
-      spotOnly: true,
-      disableMissing: true,
-    });
-  } catch (error) {
-    console.error("[settings] sync coin universe failed", error);
+  if (session.isAdmin) {
+    await setAppSettings(next);
+    try {
+      await syncCoinUniverseFromBinance({
+        explicitCoins: nextCoins,
+        spotOnly: true,
+        disableMissing: true,
+      });
+    } catch (error) {
+      console.error("[settings] sync coin universe failed", error);
+    }
+  } else {
+    // Per-user overrides only; do not touch global universe
+    await setAppSettings(next);
+    try {
+      await upsertSessionCoinUniverse(badge, nextCoins, { enable: true });
+    } catch (err) {
+      console.error("[settings] user coin universe update failed", err);
+    }
   }
 
   redirect("/settings?ok=universe");
@@ -670,5 +698,3 @@ export default async function SettingsPage({
     </div>
   );
 }
-
-

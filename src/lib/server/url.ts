@@ -15,7 +15,7 @@ function cleanBase(base: string) {
  * Prefers NEXT_PUBLIC_BASE_URL (or APP_BASE_URL), otherwise falls back to the
  * current request host so the call keeps working in dev/staging without extra env.
  */
-export function buildInternalUrl(path: string): string {
+export async function buildInternalUrl(path: string): Promise<string> {
   const normalizedPath = normalizePath(path);
   const envBase =
     cleanBase(process.env.NEXT_PUBLIC_BASE_URL || "") ||
@@ -25,14 +25,18 @@ export function buildInternalUrl(path: string): string {
     return `${envBase}${normalizedPath}`;
   }
 
-  const hdr = headers() as unknown as Headers;
-  const host = hdr.get("x-forwarded-host") || hdr.get("host");
-  const proto = hdr.get("x-forwarded-proto") || "http";
+  try {
+    const hdr = await headers();
+    const host = hdr.get("x-forwarded-host") || hdr.get("host");
+    const proto = hdr.get("x-forwarded-proto") || "http";
 
-  if (!host) {
-    // fall back to relative path; fetch() will resolve it for serverless runtimes
+    if (!host) {
+      // fall back to relative path; fetch() will resolve it for serverless runtimes
+      return normalizedPath;
+    }
+
+    return `${proto}://${host}${normalizedPath}`;
+  } catch {
     return normalizedPath;
   }
-
-  return `${proto}://${host}${normalizedPath}`;
 }

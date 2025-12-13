@@ -29,6 +29,7 @@ export type ApiMatrixRow = {
   benchmark_pct24h: DualRow;
   ref_block: DualRow;
   snap_block?: DualRow;
+  trade_block?: DualRow;
   delta: Cell;
   id_pct: Cell;
   pct_drv: Cell;
@@ -124,6 +125,20 @@ const DEFAULT_COLUMNS: TableColumn[] = [
     label: "snap",
     width: "100px",
     getter: (row) => row.snap_block?.bottom,
+    formatter: (v) => fmtDecimal(v, 7),
+  },
+  {
+    key: "pct_traded",
+    label: "pct_traded",
+    width: "110px",
+    getter: (row) => row.trade_block?.top,
+    formatter: (v) => fmtPercent(v, 4),
+  },
+  {
+    key: "traded",
+    label: "traded",
+    width: "110px",
+    getter: (row) => row.trade_block?.bottom,
     formatter: (v) => fmtDecimal(v, 7),
   },
 ];

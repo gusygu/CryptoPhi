@@ -44,112 +44,68 @@ export function normalizeCoinList(input: unknown): string[] {
 }
 
 export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Promise<CoinUniverseEntry[]> {
-  try {
-    const { rows } = await query<{
-      symbol: string;
-      base: string | null;
-      quote: string | null;
-      enabled: boolean | null;
-      sort_order: number | null;
-    }>(
-      `
-        with ctx as (
-          select nullif(current_setting('app.current_user_id', true), '')::uuid as user_id
-        ),
-        merged as (
-          -- user-specific overrides
-          select
-            cuu.symbol,
-            cuu.base_asset,
-            cuu.quote_asset,
-            cuu.enabled,
-            cuu.sort_order
-          from settings.coin_universe_user cuu, ctx
-          where ctx.user_id is not null
-            and cuu.user_id = ctx.user_id
+  const { rows } = await query<{
+    symbol: string;
+    base_asset: string | null;
+    quote_asset: string | null;
+    enabled: boolean | null;
+    sort_order: number | null;
+  }>(
+    `
+      select
+        symbol,
+        upper(coalesce(base_asset, (public._split_symbol(symbol)).base)) as base_asset,
+        upper(coalesce(quote_asset, (public._split_symbol(symbol)).quote)) as quote_asset,
+        coalesce(enabled, true) as enabled,
+        sort_order
+      from user_space.v_effective_coin_universe
+      ${options.onlyEnabled ? "where coalesce(enabled, true) = true" : ""}
+      order by coalesce(sort_order, $1::int), symbol
+    `,
+    [SORT_SENTINEL]
+  );
 
-          union all
-
-          -- global defaults for symbols not overridden by user
-          select
-            cg.symbol,
-            cg.base_asset,
-            cg.quote_asset,
-            cg.enabled,
-            cg.sort_order
-          from settings.coin_universe cg
-          where not exists (
-            select 1
-            from settings.coin_universe_user cuu, ctx
-            where ctx.user_id is not null
-              and cuu.user_id = ctx.user_id
-              and cuu.symbol = cg.symbol
-          )
-        )
-        select
-          symbol,
-          upper(coalesce(base_asset, (public._split_symbol(symbol)).base)) as base,
-          upper(coalesce(quote_asset, (public._split_symbol(symbol)).quote)) as quote,
-          coalesce(enabled, true) as enabled,
-          sort_order
-        from merged
-        ${options.onlyEnabled ? "where coalesce(enabled, true) = true" : ""}
-        order by coalesce(sort_order, $1::int), symbol
-      `,
-      [SORT_SENTINEL]
-    );
-
-    return rows
-      .filter((row) => row.base && row.quote)
-      .map((row) => ({
-        symbol: row.symbol?.toUpperCase() ?? "",
-        base: row.base!.toUpperCase(),
-        quote: row.quote!.toUpperCase(),
-        enabled: Boolean(row.enabled ?? true),
-        sortOrder: row.sort_order,
-      }))
-      .filter((entry) => entry.symbol.length > 0);
-  } catch (err) {
-    console.warn("[settings] coin universe query failed, trying legacy fallback:", err);
-    try {
-      const { rows } = await query<{
-        symbol: string;
-        base_asset: string | null;
-        quote_asset: string | null;
-        enabled: boolean | null;
-        sort_order: number | null;
-      }>(
-        `
-          select
-            symbol,
-            upper(coalesce(base_asset, (public._split_symbol(symbol)).base)) as base_asset,
-            upper(coalesce(quote_asset, (public._split_symbol(symbol)).quote)) as quote_asset,
-            coalesce(enabled, true) as enabled,
-            sort_order
-          from settings.coin_universe
-          ${options.onlyEnabled ? "where coalesce(enabled, true) = true" : ""}
-          order by coalesce(sort_order, $1::int), symbol
-        `,
-        [SORT_SENTINEL]
-      );
-      return rows
-        .filter((row) => row.base_asset && row.quote_asset)
-        .map((row) => ({
-          symbol: row.symbol?.toUpperCase() ?? "",
-          base: row.base_asset!.toUpperCase(),
-          quote: row.quote_asset!.toUpperCase(),
-          enabled: Boolean(row.enabled ?? true),
-          sortOrder: row.sort_order,
-        }))
-        .filter((entry) => entry.symbol.length > 0);
-    } catch (innerErr) {
-      console.warn("[settings] coin universe legacy fallback failed:", innerErr);
-      return [];
-    }
-  }
+  return rows
+    .filter((row) => row.base_asset && row.quote_asset)
+    .map((row) => ({
+      symbol: row.symbol?.toUpperCase() ?? "",
+      base: row.base_asset!.toUpperCase(),
+      quote: row.quote_asset!.toUpperCase(),
+      enabled: Boolean(row.enabled ?? true),
+      sortOrder: row.sort_order,
+    }))
+    .filter((entry) => entry.symbol.length > 0);
 }
 
 /** Replace/insert per-user universe rows; optional autoDisable clears other symbols for that user. */
+export async function upsertSessionCoinUniverse(
+  sessionId: string,
+  symbols: string[],
+  opts: { enable?: boolean } = {}
+): Promise<{ enabled: number }> {
+  const sid = String(sessionId ?? "").trim();
+  if (!sid) throw new Error("sessionId required");
+  const normalized = normalizeCoinList(symbols).filter((c) => c !== "USDT");
+  const syms = normalized.map((c) => `${c}USDT`);
+  if (!syms.length) return { enabled: 0 };
+
+  const enable = opts.enable ?? true;
+  const { rows } = await query<{ enabled_count: number }>(
+    `
+      insert into user_space.session_coin_universe(session_id, symbol, enabled)
+      select $1::text, s, $2::boolean from unnest($3::text[]) s
+      on conflict (session_id, symbol) do update
+        set enabled = excluded.enabled,
+            updated_at = now()
+      returning 1
+    `,
+    [sid, enable, syms]
+  );
+
+  return { enabled: rows.length };
+}
+
+// Legacy helper kept for admin/global flows that still use user_id
 export async function upsertUserCoinUniverse(
   userId: string,
   symbols: string[],

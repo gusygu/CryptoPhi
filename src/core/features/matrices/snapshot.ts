@@ -46,7 +46,10 @@ function rowsToGrid(
   return grid;
 }
 
-export async function fetchSnapshotBenchmarkGrid(coins: readonly string[]): Promise<SnapshotGrid> {
+export async function fetchSnapshotBenchmarkGrid(
+  coins: readonly string[],
+  appSessionId?: string | null
+): Promise<SnapshotGrid> {
   const normalized = coins.map((c) => c.toUpperCase());
   const fallback = emptyGrid(normalized.length);
   const stampMs = await resolveLatestSnapshotStampMs();
@@ -54,12 +57,12 @@ export async function fetchSnapshotBenchmarkGrid(coins: readonly string[]): Prom
     return { ts: null, grid: fallback };
   }
 
-  const tsMs = await getNearestTsAtOrBefore("benchmark", stampMs!);
+  const tsMs = await getNearestTsAtOrBefore("benchmark", stampMs!, appSessionId);
   if (!Number.isFinite(tsMs)) {
     return { ts: null, grid: fallback };
   }
 
-  const rows = await getSnapshotByType("benchmark", tsMs!, normalized);
+  const rows = await getSnapshotByType("benchmark", tsMs!, normalized, appSessionId);
   if (!rows.length) {
     return { ts: tsMs!, grid: fallback };
   }

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { getCurrentUser } from "@/lib/auth/server";
+import { RefreshKick } from "@/components/system/RefreshKick";
 
 export const dynamic = "force-dynamic";
 
@@ -78,6 +79,8 @@ export default async function Page() {
           "radial-gradient(900px 720px at 14% 10%, rgba(56,189,248,0.15), transparent 55%), radial-gradient(680px 520px at 90% 14%, rgba(168,85,247,0.14), transparent 60%), linear-gradient(180deg, #03050b 0%, #050914 55%, #03050b 100%)",
       }}
     >
+      {/* Kick off badge-scoped system refresh on home load (no throttle) */}
+      <RefreshKick badge={user.user_id || "global"} minIntervalMs={0} />
       <main className="relative mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-8 lg:px-8">
         <header className="flex flex-col gap-3 rounded-3xl border border-white/10 bg-white/5 px-5 py-6 shadow-[0_55px_140px_-70px_rgba(56,189,248,0.35)] backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-3">

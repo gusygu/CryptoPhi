@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSettings } from "@/lib/settings/client";
 import { requestRefresh, setEnabled, subscribe } from "@/lib/pollerClient";
@@ -73,8 +73,50 @@ const API_ENDPOINTS = [
   { href: "/api/vitals/status", label: "Vitals status" },
 ] as const;
 
+const GLOBAL_PATH_PREFIXES = ["/docs", "/info", "/auth"];
+
+function readBadgeFromCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const cookies = document.cookie || "";
+  const parts = cookies.split(";").map((p) => p.trim());
+  const grab = (name: string) =>
+    parts.find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+  const canonical = grab("sessionId");
+  const legacy = grab("appSessionId") || grab("app_session_id");
+  if (canonical) return decodeURIComponent(canonical);
+  if (legacy) {
+    const decoded = decodeURIComponent(legacy);
+    document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+    document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+    document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+    return decoded;
+  }
+  return null;
+}
+
+function readBadgeFromPath(pathname: string): string | null {
+  const seg = pathname.split("/").filter(Boolean)[0] ?? "";
+  if (!seg) return null;
+  if (GLOBAL_PATH_PREFIXES.some((p) => seg === p.replace("/", ""))) return null;
+  if (seg === "api") return null;
+  return seg;
+}
+
+function withBadge(href: string, badge: string): string {
+  if (!href.startsWith("/")) return href;
+  if (href.startsWith("http")) return href;
+  if (GLOBAL_PATH_PREFIXES.some((p) => href.startsWith(p))) return href;
+  if (href.startsWith("/api/")) {
+    const rest = href.slice("/api/".length);
+    return `/api/${badge}/${rest}`;
+  }
+  if (href === "/") return `/${badge}/dashboard`;
+  const trimmed = href.replace(/^\/+/, "");
+  return `/${badge}/${trimmed}`;
+}
+
 function isRouteActive(pathname: string, href: string) {
-  if (href === "/") return pathname === "/";
+  if (href === "/") return pathname === "/" || pathname.endsWith("/dashboard");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -132,6 +174,7 @@ function romanPhase(phase: number) {
 export default function HomeBar({ className = "" }: { className?: string }) {
   const pathname = usePathname() || "/";
   const { data: settings } = useSettings();
+  const [badge, setBadge] = useState<string>("global");
 
   const DEFAULT_CYCLE_MS = 80_000;
   const cycleMs = Math.max(
@@ -160,6 +203,11 @@ export default function HomeBar({ className = "" }: { className?: string }) {
   const [isSnapping, setIsSnapping] = useState(false);
   const [snapError, setSnapError] = useState<string | null>(null);
   const [lastSnapAt, setLastSnapAt] = useState<number | null>(null);
+
+  const snapshotUrl = useMemo(() => {
+    const safe = (badge || "global").trim() || "global";
+    return `/api/${encodeURIComponent(safe)}/snapshot`;
+  }, [badge]);
 
   // Reset metronome to the current settings-driven cycle
   useEffect(() => {
@@ -382,32 +430,40 @@ export default function HomeBar({ className = "" }: { className?: string }) {
 
   const loopNumber = Math.floor(cyclesCompleted / 3) + 1;
 
-    const handleSnap = useCallback(async () => {
+  const handleSnap = useCallback(async () => {
     if (isSnapping) return;
     setIsSnapping(true);
     setSnapError(null);
 
     try {
-      const res = await fetch("/api/snapshot", {
+      const res = await fetch(snapshotUrl, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-app-session": badge,
+        },
+        credentials: "include",
         body: JSON.stringify({}), // optional: pass { label } later
       });
 
-      const data = await res.json().catch(() => ({}));
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(text.slice(0, 400) || `HTTP ${res.status}`);
+      }
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "Failed to create snapshot");
+        throw new Error(data?.error || `Failed to create snapshot (status ${res.status})`);
       }
 
       setLastSnapAt(Date.now());
     } catch (err) {
-      setSnapError(
-        err instanceof Error ? err.message : String(err)
-      );
+      setSnapError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSnapping(false);
     }
-  }, [isSnapping]);
+  }, [isSnapping, badge, snapshotUrl]);
 
 
   const handleApiRedirect = useCallback((href: string) => {
@@ -430,6 +486,13 @@ export default function HomeBar({ className = "" }: { className?: string }) {
   }, []);
 
   const showDevNav = !!session?.isAdmin;
+
+  useEffect(() => {
+    const fromPath = readBadgeFromPath(pathname);
+    const fromCookie = readBadgeFromCookie();
+    const resolved = (fromPath || fromCookie || "global").trim() || "global";
+    setBadge(resolved);
+  }, [pathname]);
 
   return (
     <aside
@@ -655,14 +718,15 @@ export default function HomeBar({ className = "" }: { className?: string }) {
 
           <nav className="mt-3 space-y-1" aria-label="Primary">
             {FEATURE_LINKS.map((item) => {
-              const active = isRouteActive(pathname, item.href);
+              const target = withBadge(item.href, badge);
+              const active = isRouteActive(pathname, target);
               const cls = active
                 ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-100 shadow-[0_0_14px_rgba(16,185,129,0.25)]"
                 : "border-zinc-800/80 bg-black/30 text-zinc-300 hover:border-emerald-400/40 hover:text-emerald-100";
               return (
                 <Link
                   key={item.href}
-                  href={item.href}
+                  href={target}
                   aria-current={active ? "page" : undefined}
                   className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition ${cls}`}
                 >
@@ -684,17 +748,18 @@ export default function HomeBar({ className = "" }: { className?: string }) {
             <p className="text-[11px] uppercase tracking-wide text-zinc-500">Admin tools</p>
             <nav className="mt-3 space-y-1" aria-label="Developer">
               {DEV_LINKS.map((item) => {
-                const active = isRouteActive(pathname, item.href);
-                const cls = active
-                  ? "border-sky-500/60 bg-sky-600/20 text-sky-100 shadow-[0_0_14px_rgba(56,189,248,0.25)]"
-                  : "border-zinc-800/80 bg-black/30 text-zinc-300 hover:border-sky-500/40 hover:text-sky-100";
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-current={active ? "page" : undefined}
-                    className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition ${cls}`}
-                  >
+              const target = withBadge(item.href, badge);
+              const active = isRouteActive(pathname, target);
+              const cls = active
+                ? "border-sky-500/60 bg-sky-600/20 text-sky-100 shadow-[0_0_14px_rgba(56,189,248,0.25)]"
+                : "border-zinc-800/80 bg-black/30 text-zinc-300 hover:border-sky-500/40 hover:text-sky-100";
+              return (
+                <Link
+                  key={item.href}
+                  href={target}
+                  aria-current={active ? "page" : undefined}
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition ${cls}`}
+                >
                     <span>{item.label}</span>
                     {active ? <span className="text-[10px] uppercase text-sky-200">now</span> : null}
                   </Link>
@@ -723,9 +788,9 @@ export default function HomeBar({ className = "" }: { className?: string }) {
           >
             <option value="">Select endpoint</option>
             {API_ENDPOINTS.map((api) => (
-              <option key={api.href} value={api.href}>
-                {api.label}
-              </option>
+            <option key={api.href} value={withBadge(api.href, badge)}>
+              {api.label}
+            </option>
             ))}
           </select>
         </div>

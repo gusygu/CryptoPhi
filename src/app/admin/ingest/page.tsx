@@ -3,7 +3,8 @@ import { buildInternalUrl } from "@/lib/server/url";
 
 async function fetchJson(path: string) {
   try {
-    const res = await fetch(buildInternalUrl(path), {
+    const url = await buildInternalUrl(path);
+    const res = await fetch(url, {
       cache: "no-store",
     });
     if (!res.ok) return null;

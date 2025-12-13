@@ -1,6 +1,7 @@
 // src/core/db/db.ts
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import { db, getPool, query, withClient } from "./pool_server";
+import { resolveRequestBadge } from "@/lib/server/badge";
 
 export { db, getPool, query, withClient } from "./pool_server";
 export { sql } from "./session";
@@ -91,7 +92,7 @@ async function ensureMatrixTables(client: PoolClient) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS matrices.dyn_values (
       ts_ms         bigint           NOT NULL,
-      matrix_type   text             NOT NULL CHECK (matrix_type IN ('benchmark','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap')),
+      matrix_type   text             NOT NULL CHECK (matrix_type IN ('benchmark','benchmark_trade','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap','pct_traded','traded')),
       base          text             NOT NULL,
       quote         text             NOT NULL,
       value         double precision NOT NULL,
@@ -100,15 +101,44 @@ async function ensureMatrixTables(client: PoolClient) {
       opening_ts    timestamptz,
       snapshot_stamp boolean         NOT NULL DEFAULT false,
       snapshot_ts   timestamptz,
+      trade_stamp   boolean          NOT NULL DEFAULT false,
+      trade_ts      timestamptz,
       created_at    timestamptz      NOT NULL DEFAULT now(),
       PRIMARY KEY (ts_ms, matrix_type, base, quote),
       CHECK (opening_stamp = false OR opening_ts IS NOT NULL),
-      CHECK (snapshot_stamp = false OR snapshot_ts IS NOT NULL)
+      CHECK (snapshot_stamp = false OR snapshot_ts IS NOT NULL),
+      CHECK (trade_stamp = false OR trade_ts IS NOT NULL)
     )
+  `);
+  await client.query(`
+    ALTER TABLE matrices.dyn_values
+      ADD COLUMN IF NOT EXISTS trade_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS trade_ts timestamptz
+  `);
+  await client.query(`
+    ALTER TABLE matrices.dyn_values
+      DROP CONSTRAINT IF EXISTS dyn_values_matrix_type_check;
+    ALTER TABLE matrices.dyn_values
+      ADD CONSTRAINT dyn_values_matrix_type_check
+        CHECK (matrix_type IN ('benchmark','benchmark_trade','delta','pct24h','id_pct','pct_drv','ref','pct_ref','pct_snap','snap','pct_traded','traded'))
+  `);
+  await client.query(`
+    ALTER TABLE matrices.dyn_values
+      DROP CONSTRAINT IF EXISTS chk_dyn_values_trade_ts;
+    ALTER TABLE matrices.dyn_values
+      ADD CONSTRAINT chk_dyn_values_trade_ts CHECK (trade_stamp = false OR trade_ts IS NOT NULL)
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_matrices_dyn_values_pair
       ON matrices.dyn_values (matrix_type, base, quote, ts_ms DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS ix_dyn_values_trade
+      ON matrices.dyn_values (matrix_type, trade_stamp, trade_ts DESC, ts_ms DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS ix_dyn_values_trade_session
+      ON matrices.dyn_values ((coalesce(meta->>'app_session_id','global')), trade_stamp, trade_ts DESC)
   `);
   await client.query(`
     CREATE TABLE IF NOT EXISTS matrices.dyn_values_stage (
@@ -123,11 +153,29 @@ async function ensureMatrixTables(client: PoolClient) {
       opening_ts     timestamptz,
       snapshot_stamp boolean          NOT NULL DEFAULT false,
       snapshot_ts    timestamptz,
+      trade_stamp    boolean          NOT NULL DEFAULT false,
+      trade_ts       timestamptz,
       created_at     timestamptz      NOT NULL DEFAULT now(),
       PRIMARY KEY (ts_ms, matrix_type, base, quote),
       CHECK (opening_stamp = false OR opening_ts IS NOT NULL),
-      CHECK (snapshot_stamp = false OR snapshot_ts IS NOT NULL)
+      CHECK (snapshot_stamp = false OR snapshot_ts IS NOT NULL),
+      CHECK (trade_stamp = false OR trade_ts IS NOT NULL)
     )
+  `);
+  await client.query(`
+    ALTER TABLE matrices.dyn_values_stage
+      ADD COLUMN IF NOT EXISTS trade_stamp boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS trade_ts timestamptz
+  `);
+  await client.query(`
+    ALTER TABLE matrices.dyn_values_stage
+      DROP CONSTRAINT IF EXISTS chk_dyn_stage_trade_ts;
+    ALTER TABLE matrices.dyn_values_stage
+      ADD CONSTRAINT chk_dyn_stage_trade_ts CHECK (trade_stamp = false OR trade_ts IS NOT NULL)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS ix_dyn_stage_trade
+      ON matrices.dyn_values_stage (trade_stamp, trade_ts DESC, ts_ms DESC)
   `);
 }
 
@@ -231,16 +279,25 @@ function dedupeUpper(xs: readonly string[] | undefined | null): string[] {
 }
 
 const openingStampedSessions = new Set<string>();
-function normalizeSessionId(id: string | null | undefined): string {
-  const s = String(id ?? "").trim();
+async function currentRequestSessionId(): Promise<string | null> {
+  try {
+    const badge = await resolveRequestBadge();
+    return badge || null;
+  } catch {
+    return null;
+  }
+}
+export async function normalizeSessionId(id: string | null | undefined): Promise<string> {
+  const fromHeader = await currentRequestSessionId();
+  const s = String(id ?? fromHeader ?? "").trim();
   return s || "global";
 }
 
-export function markOpeningStampOnce(appSessionId: string | null | undefined, tsMs: number): {
+export async function markOpeningStampOnce(appSessionId: string | null | undefined, tsMs: number): Promise<{
   openingStamp: boolean;
   openingTs: number;
-} {
-  const key = normalizeSessionId(appSessionId);
+}> {
+  const key = await normalizeSessionId(appSessionId);
   if (openingStampedSessions.has(key)) {
     return { openingStamp: false, openingTs: tsMs };
   }
@@ -253,7 +310,7 @@ async function shouldStampOpeningOnce(
   appSessionId: string | null | undefined,
   tsMs: number
 ): Promise<{ openingStamp: boolean; openingTs: number }> {
-  const key = normalizeSessionId(appSessionId);
+  const key = await normalizeSessionId(appSessionId);
   if (openingStampedSessions.has(key)) {
     return { openingStamp: false, openingTs: tsMs };
   }
@@ -303,6 +360,7 @@ async function getMatrixValuesTableIdent(
 /** Matrix type union (aligns with DDL) */
 export type MatrixType =
   | "benchmark"
+  | "benchmark_trade"
   | "delta"
   | "pct24h"
   | "id_pct"
@@ -310,30 +368,48 @@ export type MatrixType =
   | "ref"
   | "pct_ref"
   | "pct_snap"
-  | "snap";
+  | "snap"
+  | "pct_traded"
+  | "traded";
 
 /** Bulk upsert directly into main table (bypasses stage/commit) */
-export async function upsertMatrixRows(rows: {
-  ts_ms: number;
-  matrix_type: MatrixType;
-  base: string; quote: string; value: number;
-  meta?: Record<string, any>;
-}[]) {
+export async function upsertMatrixRows(
+  rows: {
+    ts_ms: number;
+    matrix_type: MatrixType;
+    base: string; quote: string; value: number;
+    meta?: Record<string, any>;
+  }[],
+  appSessionId?: string | null
+) {
   if (!rows.length) return;
+  const sessionKey = await normalizeSessionId(appSessionId);
   const client = await db.connect();
   try {
     const values: any[] = [];
     const chunks = rows.map((r, i) => {
-      const j = i * 6;
-      values.push(r.ts_ms, r.matrix_type, r.base, r.quote, r.value, JSON.stringify(r.meta ?? {}));
-      return `($${j+1}, $${j+2}, $${j+3}, $${j+4}, $${j+5}, $${j+6})`;
+      const j = i * 7;
+      const meta = { ...(r.meta ?? {}), app_session_id: sessionKey };
+      values.push(
+        r.ts_ms,
+        r.matrix_type,
+        r.base,
+        r.quote,
+        r.value,
+        JSON.stringify(meta),
+        sessionKey
+      );
+      return `($${j+1}, $${j+2}, $${j+3}, $${j+4}, $${j+5}, $${j+6}, $${j+7})`;
     }).join(",");
 
     const sql = `
-      INSERT INTO ${TABLE} (ts_ms, matrix_type, base, quote, value, meta)
+      INSERT INTO ${TABLE} (ts_ms, matrix_type, base, quote, value, meta, app_session_id)
       VALUES ${chunks}
-      ON CONFLICT (ts_ms, matrix_type, base, quote)
-      DO UPDATE SET value = EXCLUDED.value, meta = EXCLUDED.meta;
+      ON CONFLICT (ts_ms, matrix_type, base, quote, user_key)
+      DO UPDATE SET
+        value = EXCLUDED.value,
+        meta = EXCLUDED.meta,
+        app_session_id = COALESCE(EXCLUDED.app_session_id, ${TABLE}.app_session_id);
     `;
     await client.query(sql, values);
   } finally {
@@ -342,19 +418,29 @@ export async function upsertMatrixRows(rows: {
 }
 
 /** Snapshots & lookups */
-export async function getLatestByType(matrix_type: string, coins: string[]) {
+export async function getLatestByType(
+  matrix_type: string,
+  coins: string[],
+  appSessionId?: string | null
+) {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const client = await db.connect();
   try {
     const { rows } = await client.query(
-      `SELECT ts_ms FROM ${TABLE} WHERE matrix_type=$1 ORDER BY ts_ms DESC LIMIT 1`,
-      [matrix_type]
+      `SELECT ts_ms
+         FROM ${TABLE}
+        WHERE matrix_type=$1
+          AND coalesce(meta->>'app_session_id','global') = $2
+     ORDER BY ts_ms DESC LIMIT 1`,
+      [matrix_type, sessionKey]
     );
     if (!rows.length) return { ts_ms: null, values: [] as any[] };
     const ts_ms = Number(rows[0].ts_ms);
     const { rows: vals } = await client.query(
       `SELECT base, quote, value FROM ${TABLE}
-       WHERE matrix_type=$1 AND ts_ms=$2 AND base = ANY($3) AND quote = ANY($3)`,
-      [matrix_type, ts_ms, coins]
+       WHERE matrix_type=$1 AND ts_ms=$2 AND base = ANY($3) AND quote = ANY($3)
+         AND coalesce(meta->>'app_session_id','global') = $4`,
+      [matrix_type, ts_ms, coins, sessionKey]
     );
     return { ts_ms, values: vals };
   } finally { client.release(); }
@@ -367,7 +453,7 @@ export async function getPrevValue(
   beforeTs: number,
   appSessionId?: string | null
 ) {
-  const sessionKey = normalizeSessionId(appSessionId);
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT value FROM ${TABLE}
      WHERE matrix_type=$1 AND base=$2 AND quote=$3 AND ts_ms < $4
@@ -378,31 +464,47 @@ export async function getPrevValue(
   return rows.length ? Number(rows[0].value) : null;
 }
 
-export async function getLatestTsForType(matrix_type: string) {
+export async function getLatestTsForType(matrix_type: string, appSessionId?: string | null) {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
-    `SELECT MAX(ts_ms) AS ts_ms FROM ${TABLE} WHERE matrix_type=$1`,
-    [matrix_type]
+    `SELECT MAX(ts_ms) AS ts_ms FROM ${TABLE}
+      WHERE matrix_type=$1
+        AND coalesce(meta->>'app_session_id','global') = $2`,
+    [matrix_type, sessionKey]
   );
   const v = rows[0]?.ts_ms;
   return v == null ? null : Number(v);
 }
 
-export async function getNearestTsAtOrBefore(matrix_type: string, ts_ms: number) {
+export async function getNearestTsAtOrBefore(
+  matrix_type: string,
+  ts_ms: number,
+  appSessionId?: string | null
+) {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT ts_ms FROM ${TABLE}
      WHERE matrix_type=$1 AND ts_ms <= $2
+       AND coalesce(meta->>'app_session_id','global') = $3
      ORDER BY ts_ms DESC LIMIT 1`,
-    [matrix_type, ts_ms]
+    [matrix_type, ts_ms, sessionKey]
   );
   const v = rows[0]?.ts_ms;
   return v == null ? null : Number(v);
 }
 
-export async function getSnapshotByType(matrix_type: string, ts_ms: number, coins: string[]) {
+export async function getSnapshotByType(
+  matrix_type: string,
+  ts_ms: number,
+  coins: string[],
+  appSessionId?: string | null
+) {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT base, quote, value FROM ${TABLE}
-     WHERE matrix_type=$1 AND ts_ms=$2 AND base = ANY($3) AND quote = ANY($3)`,
-    [matrix_type, ts_ms, coins]
+     WHERE matrix_type=$1 AND ts_ms=$2 AND base = ANY($3) AND quote = ANY($3)
+       AND coalesce(meta->>'app_session_id','global') = $4`,
+    [matrix_type, ts_ms, coins, sessionKey]
   );
   return rows as { base:string; quote:string; value:number }[];
 }
@@ -413,7 +515,7 @@ export async function getPrevSnapshotByType(
   coins: string[],
   appSessionId?: string | null
 ) {
-  const sessionKey = normalizeSessionId(appSessionId);
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
     `SELECT DISTINCT ON (base, quote) base, quote, value
         FROM ${TABLE}
@@ -428,12 +530,100 @@ export async function getPrevSnapshotByType(
   return rows as { base: string; quote: string; value: number }[];
 }
 
-export async function countRowsAt(matrix_type: string, ts_ms: number) {
+export async function countRowsAt(matrix_type: string, ts_ms: number, appSessionId?: string | null) {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query(
-    `SELECT count(*)::int AS n FROM ${TABLE} WHERE matrix_type=$1 AND ts_ms=$2`,
-    [matrix_type, ts_ms]
+    `SELECT count(*)::int AS n FROM ${TABLE}
+      WHERE matrix_type=$1 AND ts_ms=$2
+        AND coalesce(meta->>'app_session_id','global') = $3`,
+    [matrix_type, ts_ms, sessionKey]
   );
   return rows[0]?.n ?? 0;
+}
+
+/** Stamp the latest benchmark slice for a session with opening_stamp=true. */
+export async function stampOpeningForSession(
+  appSessionId: string | null | undefined,
+  targetTsMs?: number | null
+): Promise<{ ok: boolean; stamped: number; tsMs: number | null }> {
+  const sessionKey = await normalizeSessionId(appSessionId);
+  const client = await db.connect();
+  try {
+    let tsMs: number | null = null;
+    if (targetTsMs != null && Number.isFinite(Number(targetTsMs))) {
+      tsMs = Number(targetTsMs);
+    } else {
+      const { rows } = await client.query<{ ts_ms: string | number | null }>(
+        `SELECT max(ts_ms) AS ts_ms
+           FROM ${TABLE}
+          WHERE matrix_type = 'benchmark'
+            AND coalesce(meta->>'app_session_id','global') = $1`,
+        [sessionKey]
+      );
+      const raw = rows[0]?.ts_ms;
+      const parsed = raw == null ? NaN : Number(raw);
+      tsMs = Number.isFinite(parsed) ? parsed : null;
+    }
+
+    if (!Number.isFinite(tsMs)) {
+      return { ok: false, stamped: 0, tsMs: null };
+    }
+
+    const { rowCount } = await client.query(
+      `UPDATE ${TABLE}
+          SET opening_stamp = true,
+              opening_ts    = COALESCE(opening_ts, to_timestamp($2/1000.0))
+        WHERE matrix_type = 'benchmark'
+          AND ts_ms = $2
+          AND coalesce(meta->>'app_session_id','global') = $1`,
+      [sessionKey, tsMs]
+    );
+    return { ok: (rowCount ?? 0) > 0, stamped: rowCount ?? 0, tsMs };
+  } finally {
+    client.release();
+  }
+}
+
+/** Stamp the nearest benchmark slice at/before the given snapshot ms with snapshot_stamp=true. */
+export async function stampSnapshotForSession(
+  appSessionId: string | null | undefined,
+  snapshotMs: number | null | undefined
+): Promise<{ ok: boolean; stamped: number; tsMs: number | null }> {
+  const sessionKey = await normalizeSessionId(appSessionId);
+  const targetMs = Number(snapshotMs);
+  if (!Number.isFinite(targetMs)) {
+    return { ok: false, stamped: 0, tsMs: null };
+  }
+
+  const client = await db.connect();
+  try {
+    const { rows } = await client.query<{ ts_ms: string | number | null }>(
+      `SELECT max(ts_ms) AS ts_ms
+         FROM ${TABLE}
+        WHERE matrix_type = 'benchmark'
+          AND ts_ms <= $2
+          AND coalesce(meta->>'app_session_id','global') = $1`,
+      [sessionKey, targetMs]
+    );
+    const raw = rows[0]?.ts_ms;
+    const tsMs = Number.isFinite(Number(raw)) ? Number(raw) : null;
+    if (!Number.isFinite(tsMs)) {
+      return { ok: false, stamped: 0, tsMs: null };
+    }
+
+    const { rowCount } = await client.query(
+      `UPDATE ${TABLE}
+          SET snapshot_stamp = true,
+              snapshot_ts    = to_timestamp($3/1000.0)
+        WHERE matrix_type = 'benchmark'
+          AND ts_ms = $2
+          AND coalesce(meta->>'app_session_id','global') = $1`,
+      [sessionKey, tsMs, targetMs]
+    );
+    return { ok: (rowCount ?? 0) > 0, stamped: rowCount ?? 0, tsMs };
+  } finally {
+    client.release();
+  }
 }
 
 /** Legacy alias required by older API routes. */
@@ -545,6 +735,9 @@ export async function stageMatrixGrid(opts: {
   openingTs?: number | null;
   snapshotStamp?: boolean;
   snapshotTs?: number | null;
+  tradeStamp?: boolean;
+  tradeTs?: number | null;
+  userId?: string | null;
   client?: PoolClient;
 }) {
   const {
@@ -558,6 +751,9 @@ export async function stageMatrixGrid(opts: {
     openingTs,
     snapshotStamp,
     snapshotTs,
+    tradeStamp,
+    tradeTs,
+    userId: userIdOverride,
     client: external,
   } = opts;
   const client = external ?? (await db.connect());
@@ -566,38 +762,78 @@ export async function stageMatrixGrid(opts: {
     const rows = Array.from(cellsOf(coins, values));
     if (!rows.length) return { ok: true, staged: 0 };
 
-    const metaObj = { ...(meta ?? {}), app_session_id: appSessionId };
+    const sessionKey = await normalizeSessionId(appSessionId);
+    let userId =
+      userIdOverride ??
+      (
+        await client.query<{ uid: string | null }>(
+          "select nullif(current_setting('app.current_user_id', true), '') as uid"
+        )
+      ).rows[0]?.uid ??
+      null;
+    if (!userId) {
+      const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidLike.test(sessionKey)) {
+        userId = sessionKey;
+      } else {
+        const m = sessionKey.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if (m) userId = m[0] ?? null;
+      }
+    }
+    const metaObj = { ...(meta ?? {}), app_session_id: sessionKey };
     const metaJson = JSON.stringify(metaObj);
     const openStampVal = openingStamp === true;
     const openTsVal = openingTs != null ? new Date(openingTs) : null;
     const snapStampVal = snapshotStamp === true;
     const snapTsVal = snapshotTs != null ? new Date(snapshotTs) : null;
+    const tradeStampVal = tradeStamp === true;
+    const tradeTsVal = tradeTs != null ? new Date(tradeTs) : null;
 
     const stageInfo = await ensureStageInfo(client);
+    const metaIdx = 3 + rows.length * 3;
+    const userIdx = metaIdx + 1;
+    const sessionIdx = userIdx + 1;
+    const openIdx = sessionIdx + 1;
+    const openTsIdx = openIdx + 1;
+    const snapIdx = openTsIdx + 1;
+    const snapTsIdx = snapIdx + 1;
+    const tradeIdx = snapTsIdx + 1;
+    const tradeTsIdx = tradeIdx + 1;
     const text = `
       INSERT INTO ${stageInfo.ident}
-        (ts_ms, matrix_type, base, quote, value, meta, app_session_id, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts)
+        (ts_ms, matrix_type, base, quote, value, meta, user_id, app_session_id, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts, trade_stamp, trade_ts)
       VALUES ${rows
         .map(
           (_, i) =>
-            `($1,$2,$${i * 3 + 3},$${i * 3 + 4},$${i * 3 + 5},$${
-              rows.length * 3 + 3
-            },$${rows.length * 3 + 4},$${rows.length * 3 + 5},$${rows.length * 3 + 6},$${rows.length * 3 + 7},$${rows.length * 3 + 8})`
+            `($1,$2,$${i * 3 + 3},$${i * 3 + 4},$${i * 3 + 5},$${metaIdx},$${userIdx},$${sessionIdx},$${openIdx},$${openTsIdx},$${snapIdx},$${snapTsIdx},$${tradeIdx},$${tradeTsIdx})`
         )
         .join(",")}
-      ON CONFLICT (ts_ms, matrix_type, base, quote)
+      ON CONFLICT (ts_ms, matrix_type, base, quote, user_key)
       DO UPDATE SET
         value = EXCLUDED.value,
         meta = EXCLUDED.meta,
+        user_id = COALESCE(${stageInfo.ident}.user_id, EXCLUDED.user_id),
         app_session_id = EXCLUDED.app_session_id,
         opening_stamp = ${stageInfo.ident}.opening_stamp OR EXCLUDED.opening_stamp,
         opening_ts = COALESCE(${stageInfo.ident}.opening_ts, EXCLUDED.opening_ts),
         snapshot_stamp = ${stageInfo.ident}.snapshot_stamp OR EXCLUDED.snapshot_stamp,
-        snapshot_ts = COALESCE(${stageInfo.ident}.snapshot_ts, EXCLUDED.snapshot_ts)
+        snapshot_ts = COALESCE(${stageInfo.ident}.snapshot_ts, EXCLUDED.snapshot_ts),
+        trade_stamp = ${stageInfo.ident}.trade_stamp OR EXCLUDED.trade_stamp,
+        trade_ts = COALESCE(${stageInfo.ident}.trade_ts, EXCLUDED.trade_ts)
     `;
     const params: any[] = [tsMs, matrixType];
     for (const r of rows) params.push(r.base, r.quote, r.value);
-    params.push(metaJson, appSessionId, openStampVal, openTsVal, snapStampVal, snapTsVal);
+    params.push(
+      metaJson,
+      userId,
+      sessionKey,
+      openStampVal,
+      openTsVal,
+      snapStampVal,
+      snapTsVal,
+      tradeStampVal,
+      tradeTsVal
+    );
     await client.query(text, params);
     return { ok: true, staged: rows.length };
   } finally {
@@ -614,7 +850,8 @@ export async function commitMatrixGrid(opts: {
   idem?: string | null;
   client?: PoolClient;
 }) {
-  const { matrixType, tsMs, coins, client: external } = opts;
+  const { appSessionId, matrixType, tsMs, coins, client: external } = opts;
+  const sessionKey = await normalizeSessionId(appSessionId);
   const client = external ?? (await db.connect());
   const release = !external;
   const manageTx = !external;
@@ -627,8 +864,8 @@ export async function commitMatrixGrid(opts: {
     const stageRows = await client.query<{ base: string; quote: string }>(
       `SELECT base, quote
          FROM ${stageInfo.ident}
-        WHERE ts_ms = $1 AND matrix_type = $2`,
-      [tsMs, matrixType]
+        WHERE ts_ms = $1 AND matrix_type = $2 AND app_session_id = $3`,
+      [tsMs, matrixType, sessionKey]
     );
 
     const stagedCells = stageRows.rowCount ?? stageRows.rows.length;
@@ -652,20 +889,24 @@ export async function commitMatrixGrid(opts: {
     await client.query(
       `
       INSERT INTO ${matrixTable}
-        (ts_ms, matrix_type, base, quote, value, meta, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts)
-      SELECT ts_ms, matrix_type, base, quote, value, meta, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts
+        (ts_ms, matrix_type, base, quote, value, meta, user_id, app_session_id, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts, trade_stamp, trade_ts)
+      SELECT ts_ms, matrix_type, base, quote, value, meta, user_id, app_session_id, opening_stamp, opening_ts, snapshot_stamp, snapshot_ts, trade_stamp, trade_ts
         FROM ${stageInfo.ident}
-       WHERE ts_ms = $1 AND matrix_type = $2
-      ON CONFLICT (ts_ms, matrix_type, base, quote)
+       WHERE ts_ms = $1 AND matrix_type = $2 AND app_session_id = $3
+      ON CONFLICT (ts_ms, matrix_type, base, quote, user_key)
       DO UPDATE SET
         value = EXCLUDED.value,
         meta = EXCLUDED.meta,
+        user_id = COALESCE(EXCLUDED.user_id, ${matrixTable}.user_id),
+        app_session_id = COALESCE(EXCLUDED.app_session_id, ${matrixTable}.app_session_id),
         opening_stamp = ${matrixTable}.opening_stamp OR EXCLUDED.opening_stamp,
         opening_ts = COALESCE(${matrixTable}.opening_ts, EXCLUDED.opening_ts),
         snapshot_stamp = ${matrixTable}.snapshot_stamp OR EXCLUDED.snapshot_stamp,
-        snapshot_ts = COALESCE(${matrixTable}.snapshot_ts, EXCLUDED.snapshot_ts)
+        snapshot_ts = COALESCE(${matrixTable}.snapshot_ts, EXCLUDED.snapshot_ts),
+        trade_stamp = ${matrixTable}.trade_stamp OR EXCLUDED.trade_stamp,
+        trade_ts = COALESCE(${matrixTable}.trade_ts, EXCLUDED.trade_ts)
     `,
-      [tsMs, matrixType]
+      [tsMs, matrixType, sessionKey]
     );
 
     const stagedPairs = new Set(
@@ -748,7 +989,7 @@ export async function persistLiveMatricesSlice(opts: {
       ? null
       : { openingStamp: Boolean(openingStamp), openingTs: openingTs ?? tsMs };
 
-  const sessionKey = normalizeSessionId(appSessionId);
+  const sessionKey = await normalizeSessionId(appSessionId);
 
   return withClient(async (client) => {
     const mark =

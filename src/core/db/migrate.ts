@@ -11,8 +11,10 @@ import { getPool } from "./db";
 
 function findSqlFiles(): string[] {
   const root = resolve(process.cwd());
-  const primary = resolve(root, "src/core/db/ddl.unified.sql");
-  const sqlDir  = resolve(root, "src/core/db/sql");
+  const primary = resolve(root, "ddl/ddl.unified.sql");
+  const sqlDir  = resolve(root, "ddl");
+  const legacyPrimary = resolve(root, "src/core/db/ddl.unified.sql");
+  const legacySqlDir  = resolve(root, "src/core/db/sql");
   const legacy  = [
     resolve(root, "src/core/db/ddl.sql"),
     resolve(root, "src/core/db/ddl-aux.sql"),
@@ -27,6 +29,17 @@ function findSqlFiles(): string[] {
       .filter(f => extname(f).toLowerCase() === ".sql")
       .sort()
       .map(f => resolve(sqlDir, f));
+    files.push(...dirFiles);
+  }
+
+  // legacy locations (src/core/db/ddl.unified.sql or src/core/db/sql/*.sql)
+  if (existsSync(legacyPrimary)) files.push(legacyPrimary);
+
+  if (existsSync(legacySqlDir)) {
+    const dirFiles = readdirSync(legacySqlDir)
+      .filter(f => extname(f).toLowerCase() === ".sql")
+      .sort()
+      .map(f => resolve(legacySqlDir, f));
     files.push(...dirFiles);
   }
 

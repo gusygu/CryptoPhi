@@ -8,12 +8,12 @@ import {
   normalizeCoinList,
   recordSettingsCookieSnapshot,
   syncCoinUniverseFromBases,
-  upsertUserCoinUniverse,
+  upsertSessionCoinUniverse,
 } from "@/lib/settings/coin-universe";
 import { DEFAULT_SETTINGS, migrateSettings, type AppSettings } from "./schema";
 import { resolveCycleSeconds } from "@/core/settings/time";
 import { query, getPool } from "@/core/db/pool_server";
-import { getAppSessionId } from "@/core/system/appSession";
+import { resolveRequestBadge } from "@/lib/server/badge";
 
 const COOKIE_KEY = "appSettings";
 const LEGACY_COOKIE_KEYS = ["cp_settings_v1"];
@@ -31,13 +31,19 @@ function safeParseJSON(value: string | undefined | null): any | null {
 export async function getAll(): Promise<AppSettings> {
   // set request context so DB fetches are user-aware
   const session = await getCurrentSession();
+  // badge/app_session_id: prefer request badge, fall back to global
+  const sessionKey = await resolveRequestBadge({ defaultToGlobal: false });
+  if (!sessionKey) {
+    throw new Error("missing_session");
+  }
+  const cookieName = `${COOKIE_KEY}_${sessionKey}`;
 
   const jar = await cookies();
-  const raw = jar.get(COOKIE_KEY)?.value;
+  const raw = jar.get(cookieName)?.value;
   const parsed = safeParseJSON(raw);
   const settings = migrateSettings(parsed ?? DEFAULT_SETTINGS);
   try {
-    const cycleSeconds = await resolveCycleSeconds(getAppSessionId());
+    const cycleSeconds = await resolveCycleSeconds(sessionKey);
     settings.timing.autoRefreshMs = Math.max(1_000, cycleSeconds * 1_000);
   } catch {
     // keep migrated value on failure
@@ -62,14 +68,17 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   const merged = migrateSettings({ ...current, ...(nextValue as any) });
   const session = await getCurrentSession();
   const isAdmin = !!session?.isAdmin;
-  const userId = session?.userId ?? "anon";
+  const sessionKey = await resolveRequestBadge({ defaultToGlobal: false });
+  if (!sessionKey) {
+    throw new Error("missing_session");
+  }
 
   const normalizedCoins = normalizeCoinList(merged.coinUniverse);
-  // Sync universe: admins affect global, regular users write per-user overrides.
+  // Sync universe: admins affect global, regular users write per-session overrides.
   if (isAdmin) {
     await syncCoinUniverseFromBases(normalizedCoins);
   } else {
-    await upsertUserCoinUniverse(userId, normalizedCoins, { autoDisable: true, enable: true });
+    await upsertSessionCoinUniverse(sessionKey, normalizedCoins, { enable: true });
   }
 
   const normalized: AppSettings = {
@@ -78,13 +87,14 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   };
 
   const value = JSON.stringify(normalized);
+  const cookieName = `${COOKIE_KEY}_${sessionKey || "global"}`;
   const cookie = {
-    name: COOKIE_KEY,
+    name: cookieName,
     value,
     options: {
       httpOnly: false,
       sameSite: "lax" as const,
-      path: "/",
+      path: `/`,
       maxAge: ONE_YEAR,
       // host-only cookie; not scoped to a shared domain
     },
@@ -93,16 +103,15 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
   await recordSettingsCookieSnapshot(value);
   // persist timing into DB (global/app-session scoped)
   const cycleSeconds = Math.max(1, Math.round(normalized.timing.autoRefreshMs / 1000));
-  const sessionKey = getAppSessionId() ?? "global";
   try {
     if (sessionKey === "global") {
-      await query(`select settings.sp_upsert_personal_time_setting($1,$2)`, [sessionKey, cycleSeconds]);
+      await query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]);
     } else {
       const c = await getPool().connect();
       try {
         await c.query("BEGIN");
         await c.query(`select set_config('app.current_session_id', $1, true)`, [sessionKey]);
-        await c.query(`select settings.sp_upsert_personal_time_setting($1,$2)`, [sessionKey, cycleSeconds]);
+        await c.query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]);
         await c.query("COMMIT");
       } catch (err) {
         try { await c.query("ROLLBACK"); } catch {}
@@ -111,6 +120,24 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
         c.release();
       }
     }
+  } catch {
+    // best-effort; ignore DB failures for cookie writes
+  }
+
+  // persist per-user params into user_space.params (RLS via current_user_id)
+  try {
+    await query(
+      `select user_space.sp_upsert_params($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        normalized.timing.autoRefreshMs,                    // primary_interval_ms
+        normalized.timing.secondaryEnabled,                 // secondary_enabled
+        normalized.timing.secondaryCycles,                  // secondary_cycles
+        normalized.timing.strCycles.m30,                    // str_cycles_m30
+        normalized.timing.strCycles.h1,                     // str_cycles_h1
+        normalized.timing.strCycles.h3,                     // str_cycles_h3
+        normalized.params.values.epsilon ?? null,           // epsilon override
+      ]
+    );
   } catch {
     // best-effort; ignore DB failures for cookie writes
   }

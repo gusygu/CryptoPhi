@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { describe, it, expect } from "vitest";
-import { GET as samplingGET } from "@/app/api/str-aux/sources/ingest/sampling/route";
+import { GET as samplingGET } from "@/app/api/[badge]/str-aux/sources/ingest/sampling/route";
 
 const hasDb = Boolean(process.env.DATABASE_URL);
 const SYMBOLS = (process.env.TEST_SAMPLING_SYMBOLS ??

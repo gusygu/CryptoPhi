@@ -1,5 +1,5 @@
 // src/core/features/snapshot/service.ts
-import { getPool } from "@/core/db/db";
+import { getPool, stampSnapshotForSession } from "@/core/db/db";
 import { getSettingsWithVersion } from "@/app/(server)/settings/gateway";
 
 const pool = () => getPool();
@@ -9,6 +9,8 @@ export interface SnapshotRecord {
   snapshot_stamp: string;
   label: string;
   created_by_email: string | null;
+  app_session_id?: string | null;
+  app_user_id?: string | null;
   app_version: string | null;
   scope: string[];
   notes: string | null;
@@ -66,6 +68,20 @@ const sanitizeAppVersion = (value?: string | null): string | null => {
   return trimmed ? trimmed.slice(0, SNAPSHOT_VERSION_MAX) : null;
 };
 
+const sanitizeText = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const sanitizeUuid = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return UUID_RE.test(trimmed) ? trimmed : null;
+};
+
 let registryEnsured = false;
 async function ensureSnapshotRegistry(): Promise<void> {
   if (registryEnsured) return;
@@ -77,6 +93,8 @@ async function ensureSnapshotRegistry(): Promise<void> {
       snapshot_stamp   timestamptz NOT NULL UNIQUE,
       label            text NOT NULL,
       created_by_email text,
+      app_session_id   text,
+      app_user_id      uuid,
       app_version      text,
       scope            text[] NOT NULL DEFAULT ARRAY[
         'settings','market','wallet','matrices','str_aux','cin_aux','mea_dynamics','ops'
@@ -86,9 +104,22 @@ async function ensureSnapshotRegistry(): Promise<void> {
       created_at       timestamptz NOT NULL DEFAULT now()
     )
   `);
+  await pool().query(
+    `ALTER TABLE snapshot.snapshot_registry
+       ADD COLUMN IF NOT EXISTS app_session_id text,
+       ADD COLUMN IF NOT EXISTS app_user_id uuid`
+  );
   await pool().query(`
     CREATE INDEX IF NOT EXISTS idx_snapshot_registry_stamp
       ON snapshot.snapshot_registry (snapshot_stamp DESC)
+  `);
+  await pool().query(`
+    CREATE INDEX IF NOT EXISTS idx_snapshot_registry_app_session
+      ON snapshot.snapshot_registry (app_session_id, snapshot_stamp DESC)
+  `);
+  await pool().query(`
+    CREATE INDEX IF NOT EXISTS idx_snapshot_registry_app_user
+      ON snapshot.snapshot_registry (app_user_id, snapshot_stamp DESC)
   `);
   registryEnsured = true;
 }
@@ -118,13 +149,15 @@ export async function listSnapshots(limit = 50): Promise<SnapshotRecord[]> {
 
 export async function listSnapshotsForUser(
   email: string,
-  limit = 50
+  limit = 50,
+  appSessionId?: string | null
 ): Promise<SnapshotRecord[]> {
   await ensureSnapshotRegistry();
   const normalizedEmail = canonicalizeEmail(email);
   if (!normalizedEmail) {
     throw new Error("email_required");
   }
+  const hasSession = !!(appSessionId && appSessionId.trim());
   const q = await pool().query<SnapshotRecord>(
     `
     SELECT
@@ -132,6 +165,8 @@ export async function listSnapshotsForUser(
       snapshot_stamp,
       label,
       created_by_email,
+      app_session_id,
+      app_user_id,
       app_version,
       scope,
       notes,
@@ -139,10 +174,11 @@ export async function listSnapshotsForUser(
       created_at
     FROM snapshot.snapshot_registry
     WHERE LOWER(created_by_email) = $2::text
+      AND ($3::text IS NULL OR app_session_id = $3::text)
     ORDER BY snapshot_stamp DESC
     LIMIT $1::int
     `,
-    [limit, normalizedEmail]
+    [limit, normalizedEmail, hasSession ? appSessionId : null]
   );
   return q.rows;
 }
@@ -152,6 +188,8 @@ export async function createSnapshot(input: {
   createdByEmail: string | null;
   appVersion?: string | null;
   scopeOverride?: string[] | null;
+  appSessionId?: string | null;
+  appUserId?: string | null;
 }): Promise<SnapshotRecord> {
   await ensureSnapshotRegistry();
   const normalizedEmail = canonicalizeEmail(input.createdByEmail);
@@ -160,16 +198,42 @@ export async function createSnapshot(input: {
     `snapshot @ ${new Date().toISOString().replace("T", " ").slice(0, 19)}`;
   const normalizedVersion = sanitizeAppVersion(input.appVersion ?? null);
   const normalizedScope = normalizeSnapshotScope(input.scopeOverride ?? null);
+  const normalizedSessionId = sanitizeText(input.appSessionId ?? null);
+  const normalizedUserId = sanitizeUuid(input.appUserId ?? null);
 
   if (!normalizedEmail) {
     throw new Error("email_required");
   }
 
   let clientContext: any = {};
+  let ctxAppSessionId: string | null = null;
   try {
     const { settings, version } = await getSettingsWithVersion();
     clientContext.settings = settings;
     clientContext.settingsVersion = version;
+    if (input.appSessionId) clientContext.app_session_id = input.appSessionId;
+    if (input.appUserId) clientContext.app_user_id = input.appUserId;
+  } catch {
+    // snapshot still useful even without settings metadata
+  }
+
+  try {
+    const { rows } = await pool().query<{
+      app_session_id: string | null;
+      app_user_id: string | null;
+    }>(
+      `
+      select
+        nullif(current_setting('app.current_session_id', true), '') as app_session_id,
+        nullif(current_setting('app.current_user_id', true), '') as app_user_id
+    `,
+    );
+    const ctxRow = rows?.[0];
+    if (!clientContext.app_session_id && ctxRow?.app_session_id)
+      clientContext.app_session_id = ctxRow.app_session_id;
+    if (!clientContext.app_user_id && ctxRow?.app_user_id)
+      clientContext.app_user_id = ctxRow.app_user_id;
+    ctxAppSessionId = ctxRow?.app_session_id ?? null;
   } catch {
     // snapshot still useful even without settings metadata
   }
@@ -180,6 +244,8 @@ export async function createSnapshot(input: {
       snapshot_stamp,
       label,
       created_by_email,
+      app_session_id,
+      app_user_id,
       app_version,
       scope,
       notes,
@@ -189,16 +255,20 @@ export async function createSnapshot(input: {
       now(),
       $1::text,
       $2::text,
-      $3::text,
-      COALESCE($4::text[], $5::text[]),
+      nullif($3::text, '')::text,
+      nullif($4::uuid, '00000000-0000-0000-0000-000000000000')::uuid,
+      $5::text,
+      COALESCE($6::text[], $7::text[]),
       NULL,
-      $6::jsonb
+      $8::jsonb
     )
     RETURNING *
     `,
     [
       normalizedLabel,
       normalizedEmail,
+      normalizedSessionId,
+      normalizedUserId,
       normalizedVersion,
       normalizedScope,
       SNAPSHOT_SCOPE_DEFAULT,
@@ -206,7 +276,21 @@ export async function createSnapshot(input: {
     ]
   );
 
-  return q.rows[0];
+  const snapshot = q.rows[0];
+
+  // Best-effort: mark matrices benchmark slice with the snapshot stamp so downstream meta carries it.
+  try {
+    const stampMs = Date.parse(snapshot.snapshot_stamp);
+    const sessionForStamp =
+      normalizedSessionId ?? clientContext?.app_session_id ?? ctxAppSessionId ?? "global";
+    if (Number.isFinite(stampMs)) {
+      await stampSnapshotForSession(sessionForStamp, stampMs);
+    }
+  } catch {
+    /* non-critical; snapshot still returned */
+  }
+
+  return snapshot;
 }
 
 export async function createSnapshotForUser(input: {
@@ -214,6 +298,8 @@ export async function createSnapshotForUser(input: {
   label?: string;
   appVersion?: string | null;
   scopeOverride?: string[] | null;
+  appSessionId?: string | null;
+  appUserId?: string | null;
 }): Promise<SnapshotRecord> {
   const normalizedEmail = canonicalizeEmail(input.email);
   if (!normalizedEmail) {
@@ -224,5 +310,7 @@ export async function createSnapshotForUser(input: {
     createdByEmail: normalizedEmail,
     appVersion: input.appVersion ?? null,
     scopeOverride: input.scopeOverride ?? null,
+    appSessionId: input.appSessionId ?? null,
+    appUserId: input.appUserId ?? null,
   });
 }

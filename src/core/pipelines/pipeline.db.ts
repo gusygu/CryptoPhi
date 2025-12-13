@@ -1,5 +1,5 @@
 // src/core/pipelines/pipeline.db.ts
-import { db } from "@/core/db/db";
+import { db, normalizeSessionId } from "@/core/db/db";
 import { TABLES } from "@/core/db/db_server";
 import type { MatrixType } from "./types";
 
@@ -7,13 +7,16 @@ export async function getPrevMatrixValue(
   matrix_type: MatrixType,
   base: string,
   quote: string,
-  beforeTs: number
+  beforeTs: number,
+  appSessionId?: string | null
 ): Promise<number | null> {
+  const sessionKey = await normalizeSessionId(appSessionId);
   const { rows } = await db.query<{ value: number }>(
     `SELECT value FROM ${TABLES.matrices}
       WHERE matrix_type=$1 AND base=$2 AND quote=$3 AND ts_ms < $4
+        AND coalesce(meta->>'app_session_id','global') = $5
    ORDER BY ts_ms DESC LIMIT 1`,
-    [matrix_type, base, quote, beforeTs]
+    [matrix_type, base, quote, beforeTs, sessionKey]
   );
   return rows.length ? Number(rows[0].value) : null;
 }
@@ -23,7 +26,8 @@ export async function upsertMatrixGrid(
   bases: string[],
   quote: string,
   grid: (number | null)[][],
-  ts_ms: number
+  ts_ms: number,
+  appSessionId?: string | null
 ) {
   const rows: { base: string; quote: string; value: number }[] = [];
   const n = bases.length;
@@ -35,18 +39,23 @@ export async function upsertMatrixGrid(
   }
   if (!rows.length) return 0;
 
-  const cols = ["matrix_type", "base", "quote", "ts_ms", "value"];
-  const values = rows.flatMap(r => [matrix_type, r.base, r.quote, ts_ms, r.value]);
+  const sessionKey = await normalizeSessionId(appSessionId);
+  const metaJson = JSON.stringify({ app_session_id: sessionKey, source: "pipeline" });
+  const cols = ["matrix_type", "base", "quote", "ts_ms", "value", "meta", "app_session_id"];
+  const values = rows.flatMap(r => [matrix_type, r.base, r.quote, ts_ms, r.value, metaJson, sessionKey]);
   const placeholders = rows.map((_, idx) => {
     const o = idx * cols.length;
-    return `($${o+1},$${o+2},$${o+3},$${o+4},$${o+5})`;
+    return `($${o+1},$${o+2},$${o+3},$${o+4},$${o+5},$${o+6},$${o+7})`;
   }).join(",");
 
   await db.query(
     `INSERT INTO ${TABLES.matrices} (${cols.join(",")})
       VALUES ${placeholders}
-      ON CONFLICT (matrix_type, base, quote, ts_ms)
-      DO UPDATE SET value=EXCLUDED.value`,
+      ON CONFLICT (ts_ms, matrix_type, base, quote, user_key)
+      DO UPDATE SET
+        value = EXCLUDED.value,
+        meta = EXCLUDED.meta,
+        app_session_id = COALESCE(EXCLUDED.app_session_id, ${TABLES.matrices}.app_session_id)`,
     values
   );
   return rows.length;

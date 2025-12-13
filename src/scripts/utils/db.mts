@@ -11,10 +11,10 @@ const baseConfig: ClientConfig = useUrl
   ? { connectionString: String(process.env.DATABASE_URL) }
   : {
       host: String(process.env.PGHOST ?? "localhost"),
-      port: Number(process.env.PGPORT ?? 1026),
+      port: Number(process.env.PGPORT ?? 1027),
       user: String(process.env.PGUSER ?? "postgres"),
-      password: String(process.env.PGPASSWORD ?? "gus"),
-      database: String(process.env.PGDATABASE ?? "cryptopie"),
+      password: String(process.env.PGPASSWORD ?? "HwZ"),
+      database: String(process.env.PGDATABASE ?? "cryptophi"),
     };
 
 const config: ClientConfig = {

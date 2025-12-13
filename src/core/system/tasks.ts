@@ -1,39 +1,28 @@
 // src/core/system/tasks.ts
 import { db } from "@/core/db/server";
+import { buildMarketKlineParams, normalizeKlineRow } from "./inflow";
 
-const BINANCE_API = "https://api.binance.com";
-
-export async function fetchTickerPrice(symbol: string): Promise<{ symbol: string; price: string }> {
-  const res = await fetch(`${BINANCE_API}/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`ticker ${symbol}: ${res.status}`);
-  return res.json();
-}
+import { fetchKlines as fetchKlinesFromSource, fetchTicker24h } from "@/core/sources/binance";
 
 export async function ingestTickerSymbols(symbols: string[]): Promise<number> {
   if (!symbols.length) return 0;
   let count = 0;
   for (const symbol of symbols) {
-    const payload = await fetchTickerPrice(symbol);
+    const sym = symbol.toUpperCase();
+    const t = await fetchTicker24h(sym);
+    const payload = {
+      s: t.symbol ?? sym,
+      c: t.lastPrice ?? t.weightedAvgPrice ?? null,
+      E: Date.now(),
+      T: Date.now(),
+    };
     await db.query(`select market.apply_ticker_from_payload($1,$2::jsonb)`, [
-      symbol,
+      sym,
       JSON.stringify(payload),
     ]);
     count++;
   }
   return count;
-}
-
-export async function fetchKlines(
-  symbol: string,
-  interval: string,
-  limit = 200
-): Promise<any[]> {
-  const url = `${BINANCE_API}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`klines ${symbol} ${interval}: ${res.status}`);
-  return res.json();
 }
 
 export async function ingestKlinesSymbols(
@@ -42,29 +31,19 @@ export async function ingestKlinesSymbols(
   limit = 200
 ): Promise<number> {
   if (!symbols.length) return 0;
+  const sourceTag = "binance_rest";
+  // Ensure the window label exists to satisfy FK on market.klines.
+  await db.query(`select settings.upsert_window($1::text)`, [interval]);
   let rows = 0;
   for (const symbol of symbols) {
-    const klines = await fetchKlines(symbol, interval, limit);
-    for (const k of klines) {
-      const [ot, o, h, l, c, volBase, ct, quoteVol, trades, tbb, tbq] = k;
+    const sym = symbol.toUpperCase();
+    const klines = await fetchKlinesFromSource(sym, interval as any, limit);
+    for (const raw of klines) {
+      const k = normalizeKlineRow(sym, interval, raw);
+      if (!k) continue;
       await db.query(
         `select market.sp_ingest_kline_row($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [
-          symbol,
-          interval,
-          new Date(ot),
-          new Date(ct),
-          o,
-          h,
-          l,
-          c,
-          volBase,
-          quoteVol,
-          trades,
-          tbb,
-          tbq,
-          "binance_rest",
-        ]
+        buildMarketKlineParams(k, sourceTag),
       );
       rows++;
     }

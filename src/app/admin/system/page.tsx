@@ -59,11 +59,15 @@ export default async function AdminSystemPage() {
   let statusError: string | null = null;
 
   try {
+    const [healthUrl, statusUrl] = await Promise.all([
+      buildInternalUrl("/api/vitals/health"),
+      buildInternalUrl("/api/vitals/status"),
+    ]);
     const [healthRes, statusRes] = await Promise.all([
-      fetch(buildInternalUrl("/api/vitals/health"), {
+      fetch(healthUrl, {
         cache: "no-store",
       }).catch(() => null),
-      fetch(buildInternalUrl("/api/vitals/status"), {
+      fetch(statusUrl, {
         cache: "no-store",
       }).catch(() => null),
     ]);

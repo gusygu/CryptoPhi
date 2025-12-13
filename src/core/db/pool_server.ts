@@ -1,5 +1,6 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { getServerRequestContext } from "@/lib/server/request-context";
+import { resolveRequestBadge } from "@/lib/server/badge";
 import { getAppSessionId, registerAppSessionBoot } from "@/core/system/appSession";
 
 /**
@@ -20,10 +21,10 @@ const baseConfig = useUrl
   ? { connectionString: String(process.env.DATABASE_URL) }
   : {
       host: String(process.env.PGHOST ?? "localhost"),
-      port: Number(process.env.PGPORT ?? 1026),
+      port: Number(process.env.PGPORT ?? 1027),
       user: String(process.env.PGUSER ?? "postgres"),
-      password: String(process.env.PGPASSWORD ?? "gus"),
-      database: String(process.env.PGDATABASE ?? "cryptopie"),
+      password: String(process.env.PGPASSWORD ?? "HwZ"),
+      database: String(process.env.PGDATABASE ?? "cryptophi"),
     };
 
 const poolConfig = {
@@ -61,6 +62,14 @@ declare global {
 
 const CLIENT_CTX_PROP = Symbol("cp_request_ctx");
 type ContextAwareClient = PoolClient & { [CLIENT_CTX_PROP]?: string };
+async function currentRequestSessionId(): Promise<string | null> {
+  try {
+    const badge = await resolveRequestBadge();
+    return badge ? badge : null;
+  } catch {
+    return null;
+  }
+}
 
 function ensurePool(): Pool {
   if (!global.__core_pg_pool__) {
@@ -99,21 +108,57 @@ export function getDb(): Pool {
 
 async function applyRequestContext(client: PoolClient) {
   const ctx = getServerRequestContext();
+  const userId = ctx?.userId ?? null;
+  const headerSession = await currentRequestSessionId();
+  const hasExplicitBadge = !!headerSession && headerSession !== "global";
+  const sessionId = hasExplicitBadge
+    ? headerSession!
+    : userId
+    ? `user:${userId}`
+    : SESSION_ID;
+  let resolvedUserId = userId;
+  // If no userId is set but we have a session token, try to resolve via user_space.session_map
+  if (!resolvedUserId && hasExplicitBadge) {
+    try {
+      const { rows } = await client.query<{ user_id: string | null }>(
+        `select user_id from user_space.session_map where session_id = $1 limit 1`,
+        [headerSession]
+      );
+      resolvedUserId = rows[0]?.user_id ?? null;
+    } catch {
+      // ignore resolution failures; continue with null user
+    }
+  }
   const targetKey =
-    ctx && (ctx.userId || ctx.isAdmin)
-      ? `${ctx.userId ?? ""}|${ctx.isAdmin ? "1" : "0"}`
-      : "__anon__";
+    (resolvedUserId || ctx?.isAdmin)
+      ? `${resolvedUserId ?? ""}|${ctx?.isAdmin ? "1" : "0"}|${sessionId}`
+      : `__anon__|${sessionId}`;
   const contextual = client as ContextAwareClient;
   if (contextual[CLIENT_CTX_PROP] === targetKey) {
     return;
   }
-  await client.query("select auth.set_request_context($1,$2)", [
-    ctx?.userId ?? null,
-    ctx?.isAdmin ?? false,
-  ]);
-  await client.query("select set_config('app.current_user_id', $1, true)", [
-    ctx?.userId ?? null,
-  ]);
+  if (resolvedUserId && hasExplicitBadge) {
+    // Use a single transaction so LOCAL/SESSION GUCs set by set_request_context are visible to bootstrap.
+    await client.query("BEGIN");
+    try {
+      await client.query("select auth.set_request_context($1,$2,$3)", [
+        resolvedUserId,
+        ctx?.isAdmin ?? false,
+        sessionId,
+      ]);
+      await client.query("select user_space.ensure_session_coin_universe_bootstrapped()");
+      await client.query("COMMIT");
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw err;
+    }
+  } else {
+    await client.query("select auth.set_request_context($1,$2,$3)", [
+      resolvedUserId,
+      ctx?.isAdmin ?? false,
+      sessionId,
+    ]);
+  }
   contextual[CLIENT_CTX_PROP] = targetKey;
 }
 

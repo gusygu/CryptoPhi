@@ -6,6 +6,8 @@ import { query, withClient } from "@/core/db";
 
 const SESSION_COOKIE = "session";            // reuse your existing cookie name
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+const APP_SESSION_COOKIE = "sessionId";     // short app session badge (canonical)
+const LEGACY_BADGE_COOKIES = ["appSessionId", "app_session_id"];
 
 function cookieDomainFromEnv(): string | undefined {
   const envDomain =
@@ -38,6 +40,68 @@ function cookieDomainFromEnv(): string | undefined {
 
 function randomToken(): string {
   return crypto.randomBytes(32).toString("hex");
+}
+
+function shortSessionId(): string {
+  // 12-char base64url (9 bytes), good enough for badge and map lookup
+  return crypto.randomBytes(9).toString("base64url");
+}
+
+function deleteLegacyBadgeCookies(jar: Awaited<ReturnType<typeof cookies>>) {
+  for (const name of LEGACY_BADGE_COOKIES) {
+    try {
+      jar.delete(name);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+export async function ensureAppSessionCookie(userId: string): Promise<string> {
+  const jar = await cookies();
+  const existing = (jar.get(APP_SESSION_COOKIE)?.value || "").trim();
+  const legacy =
+    jar.get(LEGACY_BADGE_COOKIES[0])?.value?.trim() ||
+    jar.get(LEGACY_BADGE_COOKIES[1])?.value?.trim() ||
+    "";
+  if (existing) {
+    deleteLegacyBadgeCookies(jar);
+    return existing;
+  }
+  if (legacy) {
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    jar.set(APP_SESSION_COOKIE, legacy, {
+      httpOnly: false,
+      sameSite: "lax",
+      path: "/",
+      expires: expiresAt,
+      domain: cookieDomainFromEnv(),
+    });
+    deleteLegacyBadgeCookies(jar);
+    return legacy;
+  }
+
+  const badge = shortSessionId();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const domain = cookieDomainFromEnv();
+
+  jar.set(APP_SESSION_COOKIE, badge, {
+    httpOnly: false,
+    sameSite: "lax",
+    path: "/",
+    expires: expiresAt,
+    domain,
+  });
+  deleteLegacyBadgeCookies(jar);
+
+  // Best-effort: keep the mapping in user_space.session_map
+  try {
+    await query(`select user_space.sp_upsert_session_map($1,$2)`, [badge, userId]);
+  } catch (err) {
+    console.warn("[auth] failed to upsert session_map (ensure)", err);
+  }
+
+  return badge;
 }
 
 function hashToken(raw: string): string {
@@ -162,6 +226,7 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
   const tokenHash = hashToken(rawToken);
   const now = Date.now();
   const expiresAt = new Date(now + SESSION_TTL_MS);
+  const appSessionId = shortSessionId();
 
   const ip = req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const ua = req?.headers.get("user-agent") ?? null;
@@ -173,6 +238,13 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
      values ($1, $2, $3, $4, $5)`,
     [userId, tokenHash, expiresAt, ip, ua],
   );
+
+  // map short session_id to user for downstream badge/session resolution
+  try {
+    await query(`select user_space.sp_upsert_session_map($1,$2)`, [appSessionId, userId]);
+  } catch (err) {
+    console.warn("[auth] failed to upsert session_map:", err);
+  }
 
   const jar = await cookies();
   jar.set(
@@ -186,6 +258,19 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
       domain: cookieDomain,
     }
   );
+  // Expose short app session for badge routing; non-HttpOnly so client can send it
+  jar.set(
+    APP_SESSION_COOKIE,
+    appSessionId,
+    {
+      httpOnly: false,
+      sameSite: "lax",
+      path: "/",
+      expires: expiresAt,
+      domain: cookieDomain,
+    }
+  );
+  deleteLegacyBadgeCookies(jar);
 
   await query(`update auth."user" set last_login_at = now() where user_id = $1`, [userId]);
 
@@ -210,6 +295,8 @@ export async function clearSessionCookieAndRevoke(): Promise<void> {
     );
   }
   jar.delete(SESSION_COOKIE);
+  jar.delete(APP_SESSION_COOKIE);
+  deleteLegacyBadgeCookies(jar);
 }
 
 export async function getCurrentUser(opts?: { includeInactive?: boolean }): Promise<DbUser | null> {

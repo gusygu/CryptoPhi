@@ -45,7 +45,36 @@ const TAB_ID = (() => {
 const LS_KEY = "cryptopi:poller:leader";
 const BC_NAME = "cryptopi-poller";
 
-const FALLBACK_CONFIG: PollerConfig = { cycle40: 40, cycle120: 120, refreshUrl: "/api/system/refresh" };
+// Default refresh every 80s (80_000ms); keep both cycles aligned to avoid drift.
+const FALLBACK_CONFIG: PollerConfig = { cycle40: 80, cycle120: 80, refreshUrl: "/api/system/refresh" };
+
+function getSessionId(): string | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  const grab = (name: string) =>
+    parts.find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+  const canonical = grab("sessionId");
+  const legacy = grab("appSessionId") || grab("app_session_id");
+  if (canonical) return decodeURIComponent(canonical);
+  if (legacy) {
+    const decoded = decodeURIComponent(legacy);
+    document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+    document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+    document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+    return decoded;
+  }
+  return null;
+}
+
+function withSessionHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init ?? {});
+  const sid = getSessionId();
+  if (sid) {
+    headers.set("x-app-session", sid);
+  }
+  return headers;
+}
 
 type RawPollerConfig = {
   poll?: Partial<PollerConfig> | null;
@@ -129,7 +158,8 @@ class ClientPoller {
   private async loadConfigFromSettings() {
     // Expecting /api/settings?scope=poller -> { poll: { cycle40, cycle120 } }
     try {
-      const res = await fetch("/api/settings?scope=poller", { cache: "no-store" });
+      const headers = withSessionHeaders();
+      const res = await fetch("/api/settings?scope=poller", { cache: "no-store", headers, credentials: "include" });
       if (!res.ok) return;
       const payload = (await res.json()) as RawPollerConfig;
       const cfg = this.sanitizeConfig(payload);
@@ -345,14 +375,21 @@ class ClientPoller {
   private ensureRefresh(reason: "auto" | "manual" | "broadcast") {
     if (!this.leader || !this.state.enabled) return;
     if (this.refreshPromise) return;
-    const url = this.config.refreshUrl || FALLBACK_CONFIG.refreshUrl;
+    const sessionId = getSessionId();
+    const dynamicUrl =
+      this.config.refreshUrl && this.config.refreshUrl !== "/api/system/refresh"
+        ? this.config.refreshUrl
+        : `/api/${sessionId ?? "global"}/system/refresh`;
+    const url = dynamicUrl || FALLBACK_CONFIG.refreshUrl;
+    const headers = withSessionHeaders({ "content-type": "application/json" });
     this.refreshPromise = (async () => {
       this.setFetching(true);
       try {
         const res = await fetch(url, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ reason, pollerId: "client" }),
+          headers,
+          credentials: "include",
+          body: JSON.stringify({ reason, pollerId: sessionId ?? "client" }),
         });
         if (!res.ok) {
           throw new Error(`refresh ${res.status} ${res.statusText}`);

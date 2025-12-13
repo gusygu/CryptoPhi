@@ -40,16 +40,50 @@ const setCached = <T,>(k: string, data: T) => cache.set(k, { ts: Date.now(), dat
 const nowQ = () => ({ t: String(Date.now()) });
 const idx = (coins: Coins, c?: string) => (c ? coins.indexOf(c) : -1);
 
+function getSessionId(): string | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  const grab = (name: string) =>
+    parts.find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+  const canonical = grab("sessionId");
+  const legacy = grab("appSessionId") || grab("app_session_id");
+  if (canonical) return decodeURIComponent(canonical);
+  if (legacy) {
+    const decoded = decodeURIComponent(legacy);
+    document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+    document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+    document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+    return decoded;
+  }
+  return null;
+}
+
+function withSessionHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init ?? {});
+  const sid = getSessionId();
+  if (sid) {
+    headers.set("x-app-session", sid);
+  }
+  return headers;
+}
+
 /* ───────────── Pure fetchers ───────────── */
 export async function fetchMatricesLatest(coins?: Coins, signal?: AbortSignal): Promise<MatricesPayload> {
-  const key = `mat:${(coins ?? []).join(",")}`;
+  const sid = getSessionId() ?? "global";
+  const key = `mat:${sid}:${(coins ?? []).join(",")}`;
   const hit = getCached<MatricesPayload>(key);
   if (hit) return hit;
 
   const url = new URL(ROUTES.matricesLatest, window.location.origin);
   if (coins?.length) url.searchParams.set("coins", coins.join(","));
   Object.entries(nowQ()).forEach(([k, v]) => url.searchParams.set(k, v));
-  const r = await fetch(url, { cache: "no-store", signal });
+  const r = await fetch(url, {
+    cache: "no-store",
+    signal,
+    credentials: "include",
+    headers: withSessionHeaders(),
+  });
   if (!r.ok) throw new Error(`matrices ${r.status}`);
   const j = (await r.json()) as MatricesPayload;
   setCached(key, j);
@@ -57,14 +91,20 @@ export async function fetchMatricesLatest(coins?: Coins, signal?: AbortSignal): 
 }
 
 export async function fetchMooGrid(coins: Coins, signal?: AbortSignal): Promise<Grid | undefined> {
-  const key = `moo:${coins.join(",")}`;
+  const sid = getSessionId() ?? "global";
+  const key = `moo:${sid}:${coins.join(",")}`;
   const hit = getCached<Grid | undefined>(key);
   if (hit) return hit;
 
   const url = new URL(ROUTES.mooAux, window.location.origin);
   if (coins?.length) url.searchParams.set("coins", coins.join(","));
   Object.entries(nowQ()).forEach(([k, v]) => url.searchParams.set(k, v));
-  const r = await fetch(url, { cache: "no-store", signal });
+  const r = await fetch(url, {
+    cache: "no-store",
+    signal,
+    credentials: "include",
+    headers: withSessionHeaders(),
+  });
   if (!r.ok) return undefined;
   const j = (await r.json()) as MooResp;
   const g = j?.grid;
@@ -79,7 +119,12 @@ export async function fetchPreviewSymbols(signal?: AbortSignal): Promise<string[
 
   const url = new URL(ROUTES.preview, window.location.origin);
   Object.entries(nowQ()).forEach(([k, v]) => url.searchParams.set(k, v));
-  const r = await fetch(url, { cache: "no-store", signal });
+  const r = await fetch(url, {
+    cache: "no-store",
+    signal,
+    credentials: "include",
+    headers: withSessionHeaders(),
+  });
   if (!r.ok) return [];
   const j = (await r.json()) as PreviewResp;
   const syms = (j?.symbols ?? []).map((s) => s.toUpperCase());
@@ -98,7 +143,12 @@ export async function fetchStrAux(symbol: string, signal?: AbortSignal): Promise
   url.searchParams.set("bins", "128");
   url.searchParams.set("sessionId", "dyn");
   Object.entries(nowQ()).forEach(([k, v]) => url.searchParams.set(k, v));
-  const r = await fetch(url, { cache: "no-store", signal });
+  const r = await fetch(url, {
+    cache: "no-store",
+    signal,
+    credentials: "include",
+    headers: withSessionHeaders(),
+  });
   if (!r.ok) return undefined;
   const j = (await r.json()) as StrBinsResp;
   setCached(key, j);

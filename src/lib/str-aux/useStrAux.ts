@@ -18,14 +18,41 @@ type UseStrAuxOpts = {
   refreshMs?: number;                  // default 20_000
 };
 
+function readSessionId(): string | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  const grab = (name: string) =>
+    parts.find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1) ?? null;
+  const canonical = grab("sessionId");
+  const legacy = grab("appSessionId") || grab("app_session_id");
+  if (canonical) return decodeURIComponent(canonical);
+  if (legacy) {
+    const decoded = decodeURIComponent(legacy);
+    document.cookie = `sessionId=${encodeURIComponent(decoded)}; path=/; SameSite=Lax`;
+    document.cookie = "appSessionId=; Max-Age=0; path=/; SameSite=Lax";
+    document.cookie = "app_session_id=; Max-Age=0; path=/; SameSite=Lax";
+    return decoded;
+  }
+  return null;
+}
+
 async function fetchStrAux(pair: string): Promise<StrAuxData> {
+  const sessionId = readSessionId();
+  const headers: HeadersInit = sessionId
+    ? { "x-app-session": sessionId }
+    : {};
   const urls = [
     `/api/str-aux?pair=${encodeURIComponent(pair)}`,
     `/str-aux/api?pair=${encodeURIComponent(pair)}`,
   ];
   for (const url of urls) {
     try {
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, {
+        cache: "no-store",
+        credentials: "include",
+        headers,
+      });
       if (response.ok) {
         const payload = (await response.json()) as StrAuxData;
         return payload;

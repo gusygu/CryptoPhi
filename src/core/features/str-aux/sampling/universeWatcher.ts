@@ -1,9 +1,12 @@
 import { query } from "@/core/db/db_server";
 import { fetchOrderBook } from "@/core/sources/binance";
 import { ingestOrderBookTick } from "./buckets";
+import { DEFAULT_SAMPLER_CONFIG } from "./utils";
 
 const DEFAULT_REFRESH_MS = Number(process.env.STR_SAMPLER_REFRESH_MS ?? 60_000);
-const DEFAULT_POLL_MS = Number(process.env.STR_SAMPLER_POLL_MS ?? 1_000);
+const DEFAULT_POLL_MS = Number(
+  process.env.STR_SAMPLER_POLL_MS ?? DEFAULT_SAMPLER_CONFIG.pointIntervalMs ?? 5_000
+);
 const DEPTH_OPTIONS = [5, 10, 20, 50, 100, 500, 1000] as const;
 
 function resolveDepth(value: number | undefined): (typeof DEPTH_OPTIONS)[number] {

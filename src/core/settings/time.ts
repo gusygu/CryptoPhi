@@ -31,8 +31,9 @@ export async function resolveCycleSeconds(appSessionId?: string | null): Promise
           [session]
         );
         const { rows } = await client.query<{ cycle_seconds: number }>(
-          `select cycle_seconds from settings.personal_time_settings
-            where app_session_id = $1
+          `select cycle_seconds
+             from user_space.v_poller_time
+         order by (app_session_id = $1) desc, updated_at desc nulls last
             limit 1`,
           [session]
         );

@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getValidInviteByToken, createUserFromInvite } from "@/app/(server)/auth/invites";
 import { createSession } from "@/lib/auth/server";
@@ -52,7 +53,9 @@ async function registerFromInvite(formData: FormData) {
     });
 
     await createSession(user.user_id);
-    redirect("/");
+    const jar = await cookies();
+    const badge = (jar.get("sessionId")?.value || "").trim() || "global";
+    redirect(`/${badge}/dashboard`);
   } catch (err: any) {
     const code =
       err?.message === "suspended_email"

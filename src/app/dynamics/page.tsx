@@ -11,7 +11,7 @@ import { type FrozenStage } from "@/components/features/matrices/colors";
 import { useCoinsUniverse } from "@/lib/dynamicsLegacyClient";
 import { fromDynamicsSnapshot, useDynamicsSnapshot } from "@/core/converters/Converter.client";
 import type { DynamicsSnapshot } from "@/core/converters/provider.types";
-import type { MatricesLatestPayload } from "@/app/api/matrices/latest/route";
+import type { MatricesLatestPayload } from "@/app/api/[badge]/matrices/latest/route";
 
 // 👇 copia daqui pra baixo praticamente igual ao teu page.tsx,
 // só mudando o nome do componente pra DynamicsClient.
@@ -477,6 +477,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 
   type MatrixValues = Record<string, Record<string, number | string | null | undefined>>;
 
+  const [badge, setBadge] = useState<string>("global");
   const [marketMatrix, setMarketMatrix] = useState<{
     loading: boolean;
     error: string | null;
@@ -505,6 +506,14 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+    const fromPath = seg && seg !== "api" ? seg : "";
+    setBadge(fromPath || "global");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!badge) return;
     if (!requestCoins.length) return;
 
     const controller = new AbortController();
@@ -513,16 +522,25 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     (async () => {
       try {
         const params = requestCoins.join(",");
-        const matrixUrl = new URL("/api/matrices/latest", window.location.origin);
+        const badgePrefix = encodeURIComponent(badge || "global");
+        const matrixUrl = new URL(`/api/${badgePrefix}/matrices/latest`, window.location.origin);
         matrixUrl.searchParams.set("quote", selected.quote);
         if (params) matrixUrl.searchParams.set("coins", params);
 
-        const mooUrl = new URL("/api/moo-aux", window.location.origin);
+        const mooUrl = new URL(`/api/${badgePrefix}/moo-aux`, window.location.origin);
         if (params) mooUrl.searchParams.set("coins", params);
 
         const [matricesRes, mooRes] = await Promise.all([
-          fetch(matrixUrl.toString(), { cache: "no-store", signal: controller.signal }),
-          fetch(mooUrl.toString(), { cache: "no-store", signal: controller.signal }),
+          fetch(matrixUrl.toString(), {
+            cache: "no-store",
+            signal: controller.signal,
+            headers: { "x-app-session": badge },
+          }),
+          fetch(mooUrl.toString(), {
+            cache: "no-store",
+            signal: controller.signal,
+            headers: { "x-app-session": badge },
+          }),
         ]);
 
         if (!matricesRes.ok) throw new Error(`/api/matrices/latest ${matricesRes.status}`);
@@ -841,8 +859,6 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     </div>
   );
 }
-
-
 
 
 

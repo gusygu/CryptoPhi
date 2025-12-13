@@ -20,7 +20,8 @@ type Bucket = {
 };
 
 const STEP_MS = DEFAULT_SAMPLER_CONFIG.pointIntervalMs;
-const POLL_MS = Number(process.env.STR_SAMPLER_POLL_MS ?? 1_000);
+// Default poll cadence = point interval (5s) to avoid over-sampling and collapsing buckets.
+const POLL_MS = Number(process.env.STR_SAMPLER_POLL_MS ?? STEP_MS);
 const GAP_WARN_MS = Number(process.env.STR_SAMPLER_GAP_WARN_MS ?? POLL_MS * 2);
 const MIN_BUCKET_SNAPSHOTS = Number(process.env.STR_SAMPLER_MIN_BUCKET_SAMPLES ?? 2);
 const buckets = new Map<string, Bucket>();

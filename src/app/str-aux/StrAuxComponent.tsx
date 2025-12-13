@@ -46,6 +46,18 @@ export default function StrAuxClient({
   bins = 256,
   base = '/api/str-aux',
 }: Props) {
+  const readSessionId = () => {
+    if (typeof document === "undefined") return null;
+    const raw = document.cookie || "";
+    const parts = raw.split(";").map((p) => p.trim());
+    for (const p of parts) {
+      if (p.startsWith("sessionId=")) return decodeURIComponent(p.slice("sessionId=".length));
+      if (p.startsWith("appSessionId=")) return decodeURIComponent(p.slice("appSessionId=".length));
+      if (p.startsWith("app_session_id=")) return decodeURIComponent(p.slice("app_session_id=".length));
+    }
+    return null;
+  };
+
   const symbolsCsv = useMemo(() => symbols.join(','), [symbols]);
   const symbolsQuery = symbolsCsv ? `&symbols=${encodeURIComponent(symbolsCsv)}` : '';
   const [vectors, setVectors] = useState<Record<string, VectorRow>>({});
@@ -58,10 +70,15 @@ export default function StrAuxClient({
   useEffect(() => {
     const vecUrl = `${base}/vectors?window=${encodeURIComponent(win)}&bins=${bins}${symbolsQuery}`;
     const staUrl = `${base}/stats?window=${encodeURIComponent(win)}&bins=${bins}${symbolsQuery}`;
+    const sid = readSessionId();
+    const headers: HeadersInit = sid ? { "x-app-session": sid } : {};
     setLoading(true);
     setErrorMsg(null);
 
-    Promise.all([fetch(vecUrl), fetch(staUrl)])
+    Promise.all([
+      fetch(vecUrl, { cache: "no-store", credentials: "include", headers }),
+      fetch(staUrl, { cache: "no-store", credentials: "include", headers }),
+    ])
       .then(async ([vRes, sRes]) => {
         if (!vRes.ok) throw new Error(`vectors ${vRes.status}`);
         if (!sRes.ok) throw new Error(`stats ${sRes.status}`);

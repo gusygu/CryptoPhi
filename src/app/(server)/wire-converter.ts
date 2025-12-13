@@ -10,6 +10,7 @@ import { makeWalletHttpProvider } from "@/core/converters/providers/wallet.http"
 
 // ────────────────────────────────────────────────────────────────────────────────
 const APP_SESSION = process.env.NEXT_PUBLIC_APP_SESSION_ID || "dev-session";
+const APP_SESSION_KEY = APP_SESSION.trim() || "global";
 const STR_WINDOW: "30m" | "1h" | "3h" =
   (process.env.NEXT_PUBLIC_STR_WINDOW as any) || "30m";
 
@@ -22,10 +23,10 @@ async function moo_getAuxForPair(pair: { base: string; quote: string }) {
     .split(",")
     .map((s) => s.trim().toUpperCase());
 
-  const ts = await getLatestTsForType("id_pct");
+  const ts = await getLatestTsForType("id_pct", APP_SESSION_KEY);
   let idp = 0;
   if (ts) {
-    const rows = await getSnapshotByType("id_pct", ts, coins);
+    const rows = await getSnapshotByType("id_pct", ts, coins, APP_SESSION_KEY);
     const hit = rows.find((r: any) => r.base === pair.base && r.quote === pair.quote);
     idp = Number(hit?.value ?? 0);
   }
@@ -51,9 +52,10 @@ async function str_getIdPctHistory(from: string, to: string, lastN = 6) {
     select value
       from matrices.dyn_values
      where matrix_type='id_pct' and base=$1 and quote=$2
+       and coalesce(meta->>'app_session_id','global') = $4
      order by ts_ms desc
      limit $3`;
-  const r = await db.query<{ value: string | number }>(q, [from, to, lastN]);
+  const r = await db.query<{ value: string | number }>(q, [from, to, lastN, APP_SESSION_KEY]);
   return r.rows.map((x: { value: string | number }) => Number(x.value ?? 0));
 }
 
@@ -62,9 +64,15 @@ async function str_getIdPctHistoryTs(from: string, to: string, lastN = 8) {
     select ts_ms, value
       from matrices.dyn_values
      where matrix_type='id_pct' and base=$1 and quote=$2
+       and coalesce(meta->>'app_session_id','global') = $4
      order by ts_ms desc
      limit $3`;
-  const r = await db.query<{ ts_ms: string | number; value: string | number }>(q, [from, to, lastN]);
+  const r = await db.query<{ ts_ms: string | number; value: string | number }>(q, [
+    from,
+    to,
+    lastN,
+    APP_SESSION_KEY,
+  ]);
   return r.rows.map((x: { ts_ms: string | number; value: string | number }) => ({
     ts_ms: Number(x.ts_ms),
     value: Number(x.value ?? 0),
@@ -77,10 +85,11 @@ async function str_getPctDrvHistory(from: string, to: string, lastN = 6) {
     select value
       from matrices.dyn_values
      where matrix_type='pct_drv' and base=$1 and quote=$2
+       and coalesce(meta->>'app_session_id','global') = $4
      order by ts_ms desc
      limit $3`;
   const r1 = await db
-    .query<{ value: string | number }>(q, [from, to, lastN])
+    .query<{ value: string | number }>(q, [from, to, lastN, APP_SESSION_KEY])
     .catch(() => ({ rows: [] as Array<{ value: string | number }> }));
   if (r1.rows.length) {
     return r1.rows.map((x: { value: string | number }) => Number(x.value ?? 0));
@@ -96,10 +105,11 @@ async function str_getPctDrvHistoryTs(from: string, to: string, lastN = 8) {
     select ts_ms, value
       from matrices.dyn_values
      where matrix_type='pct_drv' and base=$1 and quote=$2
+       and coalesce(meta->>'app_session_id','global') = $4
      order by ts_ms desc
      limit $3`;
   const r1 = await db
-    .query<{ ts_ms: string | number; value: string | number }>(q, [from, to, lastN])
+    .query<{ ts_ms: string | number; value: string | number }>(q, [from, to, lastN, APP_SESSION_KEY])
     .catch(() => ({ rows: [] as Array<{ ts_ms: string | number; value: string | number }> }));
   if (r1.rows.length) {
     return r1.rows.map((x: { ts_ms: string | number; value: string | number }) => ({

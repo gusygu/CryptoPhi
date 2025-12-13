@@ -11,9 +11,12 @@ import path from "path";
 import { applySqlFile, buildClient, listSqlFiles } from "../utils/sql-runner.mts";
 
 const DEBUG = process.env.APPLY_DDL_DEBUG === "1";
-const ROOT = path.resolve("src/core/db");
+const ROOTS = [
+  path.resolve("ddl"),            // new top-level DDL packs
+  path.resolve("src/core/db"),    // legacy location
+];
 const DDL_DIRS = ["ddl", "grants", "seeds"]
-  .map((d) => path.join(ROOT, d))
+  .flatMap((d) => ROOTS.map((root) => path.join(root, d)))
   .filter((dir) => fs.existsSync(dir) && fs.lstatSync(dir).isDirectory());
 const DRY_RUN = process.env.DRY_RUN === "1";
 const FROM = process.env.FROM;

@@ -40,10 +40,10 @@ function buildClient() {
   // Fallback: local dev settings
   const cfg = {
     host: process.env.PGHOST || "localhost",
-    port: +(process.env.PGPORT || 1026),
+    port: +(process.env.PGPORT || 1027),
     user: process.env.PGUSER || "postgres",
-    password: process.env.PGPASSWORD || "gus",
-    database: process.env.PGDATABASE || "cryptopie",
+    password: process.env.PGPASSWORD || "HwZ",
+    database: process.env.PGDATABASE || "cryptophi",
     application_name: "cryptopi-ddl-runner",
   };
   console.log(
@@ -73,7 +73,10 @@ const DRY_RUN =
   process.argv.includes("--dry-run") || process.env.DRY_RUN === "1";
 
 async function run() {
-  const ddlDir = path.resolve("src/core/db/ddl");
+// Prefer top-level ddl directory; fallback to legacy src/core/db/ddl if missing.
+const ddlDir = fs.existsSync(path.resolve("ddl"))
+  ? path.resolve("ddl")
+  : path.resolve("src/core/db/ddl");
   const allFiles = listSqlFiles(ddlDir);
   if (!allFiles.length) {
     console.error("⚠ No SQL files found in", ddlDir);
