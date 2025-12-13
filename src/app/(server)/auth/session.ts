@@ -58,10 +58,16 @@ export async function requireUserSession(): Promise<UserSession> {
   }
 
   // Ensure badge is present and mapped to this user (no global fallback for authenticated flows)
-  const badge = await resolveRequestBadge({ defaultToGlobal: false, allowLegacy: false });
+  let badge = await resolveRequestBadge({ defaultToGlobal: false, allowLegacy: false });
   if (!badge) {
-    redirect("/auth?err=login_required");
+    const ensureBadge =
+      ensureAppSessionCookie ??
+      (await import("@/lib/auth/server")).ensureAppSessionCookie;
+    await ensureBadge(session.userId);
+    const jar = await cookies();
+    badge = (jar.get("sessionId")?.value || "").trim() || null;
   }
+  if (!badge) redirect("/auth?err=login_required");
   try {
     const { rows } = await query<{ ok: boolean }>(
       `select true as ok

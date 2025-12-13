@@ -62,7 +62,10 @@ export async function loginAction(formData: FormData): Promise<void> {
 
   await createSession(row.user_id);
   // Ensure badge cookie is set in the same response
-  await ensureAppSessionCookie(row.user_id);
+  const ensureBadge =
+    ensureAppSessionCookie ??
+    (await import("@/lib/auth/server")).ensureAppSessionCookie;
+  await ensureBadge(row.user_id);
   console.log("[auth] login set sessionId badge for user", row.user_id);
   const jar = await cookies();
   const badge = (jar.get("sessionId")?.value || "").trim() || "global";

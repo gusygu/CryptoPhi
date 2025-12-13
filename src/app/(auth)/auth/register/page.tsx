@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getValidInviteByToken, createUserFromInvite } from "@/app/(server)/auth/invites";
-import { createSession } from "@/lib/auth/server";
+import { createSession, ensureAppSessionCookie } from "@/lib/auth/server";
 
 type SearchParams =
   | Promise<URLSearchParams | Record<string, string | string[] | undefined> | null | undefined>
@@ -53,6 +53,11 @@ async function registerFromInvite(formData: FormData) {
     });
 
     await createSession(user.user_id);
+    const ensureBadge =
+      ensureAppSessionCookie ??
+      (await import("@/lib/auth/server")).ensureAppSessionCookie;
+    await ensureBadge(user.user_id);
+    console.log("[auth] register set sessionId badge for user", user.user_id);
     const jar = await cookies();
     const badge = (jar.get("sessionId")?.value || "").trim() || "global";
     redirect(`/${badge}/dashboard`);
