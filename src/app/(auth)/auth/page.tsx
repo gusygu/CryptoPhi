@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import React from "react";
 
-import { verifyPassword, createSession, clearSessionCookieAndRevoke, getCurrentUser } from "@/lib/auth/server";
+import { verifyPassword, createSession, clearSessionCookieAndRevoke, getCurrentUser, ensureAppSessionCookie } from "@/lib/auth/server";
 import { isEmailSuspended } from "@/lib/auth/suspension";
 import { query } from "@/core/db/db_server";
 
@@ -61,6 +61,9 @@ export async function loginAction(formData: FormData): Promise<void> {
   }
 
   await createSession(row.user_id);
+  // Ensure badge cookie is set in the same response
+  await ensureAppSessionCookie(row.user_id);
+  console.log("[auth] login set sessionId badge for user", row.user_id);
   const jar = await cookies();
   const badge = (jar.get("sessionId")?.value || "").trim() || "global";
   redirect(`/${badge}/dashboard`);
