@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { sql } from "@/core/db/db";
 
 export async function GET(
@@ -10,10 +10,9 @@ export async function GET(
     typeof (context as any)?.params?.then === "function"
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
-  const badge = params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
-  const session = auth.ctx;
+  const resolved = await resolveBadgeRequestContext(_req, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const session = resolved.session;
   if (!session.isAdmin) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
