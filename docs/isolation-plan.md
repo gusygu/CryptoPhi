@@ -11,3 +11,6 @@ The next batch will sweep the rest of the badge-scoped routes/pages to use the s
 
 Step 4 — Audit remaining badge APIs for canonical helpers (in progress)  
 We scanned badge APIs for legacy auth helpers and will migrate remaining routes (cin-aux, trade, system refresh/opening, str-aux stats/vectors/sources, settings) to use `resolveBadgeRequestContext` + `getEffectiveSettings` with scoped DB context and safe params unwrapping.
+
+Step 5 — Trade and system refresh moved to badge context  
+Trade and system refresh endpoints now resolve badge/session via `resolveBadgeRequestContext` and execute DB work inside `withDbContext` to keep RLS/scoping intact; remaining str-aux vectors are the last major badge route to migrate.

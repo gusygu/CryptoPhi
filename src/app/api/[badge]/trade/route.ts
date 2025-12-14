@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import {
   commitMatrixGrid,
   getLatestByType,
@@ -7,6 +7,7 @@ import {
   type MatrixGridObject,
 } from "@/core/db/db";
 import { fetchPairUniverseCoins } from "@/lib/settings/coin-universe";
+import { withDbContext } from "@/core/db/pool_server";
 
 type TradePayload = {
   symbol?: string;
@@ -99,11 +100,13 @@ function rowsToValues(
 }
 
 export async function PUT(req: Request, context: { params: { badge?: string } }) {
-  const badge = context?.params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) {
-    return NextResponse.json(auth.body, { status: auth.status });
-  }
+  const paramsMaybe = (context as any)?.params;
+  const params =
+    paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
+  const resolved = await resolveBadgeRequestContext(req as any, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const badge = resolved.badge;
+  const session = resolved.session;
 
   let body: TradePayload;
   try {
@@ -133,30 +136,52 @@ export async function PUT(req: Request, context: { params: { badge?: string } })
     }
 
     const values = rowsToValues(coins, latestBenchmark.values as any);
-    const stageRes = await stageMatrixGrid({
-      appSessionId,
-      matrixType: "benchmark_trade",
-      tsMs: tradeTs,
-      coins,
-      values,
-      meta: {
-        source: "trade@put",
-        trade_symbol: body.symbol ?? null,
-        trade_count: Array.isArray(body.trades) ? body.trades.length : 0,
-        trade_ts: tradeTs,
-        benchmark_ts: latestBenchmark.ts_ms,
+    const stageRes = await withDbContext(
+      {
+        userId: session.userId,
+        sessionId: badge,
+        isAdmin: session.isAdmin,
+        path: "/api/[badge]/trade",
+        badgeParam: params?.badge ?? null,
+        resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
       },
-      tradeStamp: true,
-      tradeTs,
-    });
+      async () =>
+        stageMatrixGrid({
+          appSessionId,
+          matrixType: "benchmark_trade",
+          tsMs: tradeTs,
+          coins,
+          values,
+          meta: {
+            source: "trade@put",
+            trade_symbol: body.symbol ?? null,
+            trade_count: Array.isArray(body.trades) ? body.trades.length : 0,
+            trade_ts: tradeTs,
+            benchmark_ts: latestBenchmark.ts_ms,
+          },
+          tradeStamp: true,
+          tradeTs,
+        }),
+    );
 
-    const commitRes = await commitMatrixGrid({
-      appSessionId,
-      matrixType: "benchmark_trade",
-      tsMs: tradeTs,
-      coins,
-      idem: `trade:${tradeTs}`,
-    });
+    const commitRes = await withDbContext(
+      {
+        userId: session.userId,
+        sessionId: badge,
+        isAdmin: session.isAdmin,
+        path: "/api/[badge]/trade",
+        badgeParam: params?.badge ?? null,
+        resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
+      },
+      async () =>
+        commitMatrixGrid({
+          appSessionId,
+          matrixType: "benchmark_trade",
+          tsMs: tradeTs,
+          coins,
+          idem: `trade:${tradeTs}`,
+        }),
+    );
 
     return NextResponse.json({
       ok: true,

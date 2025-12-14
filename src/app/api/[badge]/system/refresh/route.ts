@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runSystemRefresh } from "@/core/system/refresh";
 import { resolveCycleSeconds } from "@/core/settings/time";
 import { getAppSessionId } from "@/core/system/appSession";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { adoptSessionRequestContext } from "@/lib/server/request-context";
 
 export const runtime = "nodejs";
@@ -21,12 +21,12 @@ async function resolvePollerId(
 export async function POST(req: NextRequest, ctx: RouteContext) {
   try {
     const params = ctx?.params ? await ctx.params : { badge: "" };
-    const badge = params?.badge ?? "";
-    const auth = await requireUserSessionApi(badge);
-    if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+    const resolved = await resolveBadgeRequestContext(req, params);
+    if (!resolved.ok) {
+      return NextResponse.json(resolved.body, { status: resolved.status });
     }
-    const session = auth.ctx;
+    const badge = resolved.badge;
+    const session = resolved.session;
     adoptSessionRequestContext({ ...session, sessionId: badge });
 
     const body = await req.json().catch(() => ({}));
@@ -48,12 +48,12 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
 
 export async function GET(req: NextRequest, ctx: RouteContext) {
   const params = ctx?.params ? await ctx.params : { badge: "" };
-  const badge = params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) {
-    return NextResponse.json(auth.body, { status: auth.status });
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) {
+    return NextResponse.json(resolved.body, { status: resolved.status });
   }
-  const session = auth.ctx;
+  const badge = resolved.badge;
+  const session = resolved.session;
   adoptSessionRequestContext({ ...session, sessionId: badge });
   const symbols = req.nextUrl.searchParams.get("symbols");
   const interval = req.nextUrl.searchParams.get("interval") ?? undefined;
