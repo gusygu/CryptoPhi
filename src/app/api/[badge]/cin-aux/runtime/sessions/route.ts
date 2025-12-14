@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/core/db/db";
 import { listRuntimeSessions } from "@/core/features/cin-aux/runtimeQueries";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 
 // GET: list sessions
 export async function GET(
@@ -12,11 +12,11 @@ export async function GET(
     typeof (context as any)?.params?.then === "function"
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
-  const badge = params?.badge ?? "";
+  const resolved = await resolveBadgeRequestContext(req as any, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const badge = resolved.badge;
   try {
-    const auth = await requireUserSessionApi(badge);
-    if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
-    const session = auth.ctx;
+    const session = resolved.session;
     const sessions = await listRuntimeSessions(session.userId);
     return NextResponse.json(sessions);
   } catch (err: any) {
@@ -35,10 +35,10 @@ export async function POST(
     typeof (context as any)?.params?.then === "function"
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
-  const badge = params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
-  const session = auth.ctx;
+  const resolved = await resolveBadgeRequestContext(_req as any, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const badge = resolved.badge;
+  const session = resolved.session;
   try {
     const { rows } = await db.query(
       `
