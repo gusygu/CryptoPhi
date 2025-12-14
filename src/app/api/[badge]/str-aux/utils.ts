@@ -98,6 +98,7 @@ type BuildOptions = {
   allowUnverified: boolean;
   hideNoData: boolean;
   appSessionId: string;
+  settingsOverride?: Awaited<ReturnType<typeof getSettings>>;
 };
 
 function parseListParam(tokens: string[]): string[] {
@@ -392,7 +393,7 @@ function normalizeTokens(tokens: string[]): string[] {
 
 export async function buildStrAuxBins(options: BuildOptions): Promise<StrAuxBinsResponse> {
   const ts = Date.now();
-  const settings = await getSettings();
+  const settings = options.settingsOverride ?? (await getSettings());
   const bases = (settings.coinUniverse ?? []).map((coin: string) => norm(coin)).filter(Boolean);
   const availability = await pairsFromSettings(bases, {
     verify: async (symbols) => verifySymbolsMulti(symbols),

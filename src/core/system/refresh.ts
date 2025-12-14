@@ -119,9 +119,13 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       console.warn("[system/refresh] liveFromDbTickers failed, fallback to sources:", err);
       return null;
     });
+    if (live && live.coins) {
+      live = { ...live, coins: [...live.coins] };
+    }
     if (!live || !live.coins.length) {
       liveSource = "api:liveFromSources";
-      live = await liveFromSources(coins);
+      const fetched = await liveFromSources(coins);
+      live = fetched ? { ...fetched, coins: [...fetched.coins] } : null;
       // Warm ticker_latest for next ticks (best-effort).
       void ingestTickerSymbols(
         coins
@@ -130,8 +134,8 @@ export async function runSystemRefresh(opts: RefreshOptions = {}): Promise<Syste
       ).catch(() => {});
     }
 
-    const liveCoins = [...(live?.coins ?? [])];
-    if (!liveCoins.length) {
+    const liveCoins = live?.coins ? [...live.coins] : [];
+    if (!live || !liveCoins.length) {
       throw new Error("no live matrices available (db + api fallback failed)");
     }
 

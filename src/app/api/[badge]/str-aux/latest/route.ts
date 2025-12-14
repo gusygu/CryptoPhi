@@ -92,7 +92,6 @@ export async function GET(
   query.appSessionId = appSessionId;
   const { pair } = parseBaseQuote(url);
   const tokens = prependToken(query.tokens, pair);
-
   const payload = await withDbContext(
     {
       userId: session.userId,
@@ -102,17 +101,52 @@ export async function GET(
       badgeParam: params?.badge ?? null,
       resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
     },
-    async (client) =>
-      buildStrAuxBins({
-        tokens,
+    async (client) => {
+      const allowedCoins = new Set(
+        (await getEffectiveSettings({ userId: session.userId, badge, client })).coinUniverse.map(
+          (c) => c.toUpperCase(),
+        ),
+      );
+      const filteredTokens = tokens
+        .map((sym) => String(sym ?? "").toUpperCase())
+        .filter((upper) => {
+          if (!upper.endsWith("USDT") || upper.length <= 4) return false;
+          const base = upper.slice(0, -4);
+          return allowedCoins.has(base) && allowedCoins.has("USDT");
+        });
+      const defaultTokens =
+        allowedCoins.has("USDT") && allowedCoins.size > 1
+          ? Array.from(allowedCoins)
+              .filter((c) => c !== "USDT")
+              .map((base) => `${base}USDT`)
+          : [];
+      const tokensUsed = filteredTokens.length ? filteredTokens : defaultTokens;
+
+      if (!tokensUsed.length) {
+        return {
+          ok: false,
+          symbols: [],
+          out: {},
+          ts: Date.now(),
+          error: "empty_coin_universe",
+          coinsUsed: Array.from(allowedCoins),
+        };
+      }
+
+      return buildStrAuxBins({
+        tokens: tokensUsed,
         window: query.window,
         bins: query.bins,
         allowUnverified: query.allowUnverified,
         hideNoData: false,
         appSessionId,
         settingsOverride: await getEffectiveSettings({ userId: session.userId, badge, client }),
-      }),
+      });
+    },
   );
+  if ((payload as any)?.ok === false && (payload as any)?.error === "empty_coin_universe") {
+    return NextResponse.json(payload, { status: 400, headers: NO_STORE });
+  }
 
   // Prefer explicit pair if it returned ok; otherwise pick the first ok symbol
   const selectionOrder = prependToken(payload.symbols, pair);
@@ -128,7 +162,7 @@ export async function GET(
   }
 
   const coin = payload.out[chosen]!;
-  const session = buildSession(chosen, coin, appSessionId);
+  const sessionPayload = buildSession(chosen, coin, appSessionId);
 
   try {
     const cycleTs = Number(coin.lastUpdateTs ?? Date.now());
@@ -136,7 +170,7 @@ export async function GET(
       domain: "str",
       appSessionId,
       cycleTs,
-      payload: { ok: true, session, source: "computed" },
+      payload: { ok: true, session: sessionPayload, source: "computed" },
       notes: "api:str-aux/latest",
     });
   } catch (err) {
@@ -146,8 +180,5 @@ export async function GET(
   const headers = new Headers(NO_STORE);
   headers.set("x-cycle-id", String(payload?.ts ?? Date.now()));
 
-  return NextResponse.json(
-    { ok: true, session },
-    { headers }
-  );
+  return NextResponse.json({ ok: true, session: sessionPayload }, { headers });
 }

@@ -30,12 +30,13 @@ function safeSetCookie(
   value: string,
   options: Parameters<Awaited<ReturnType<typeof cookies>>["set"]>[2],
 ): boolean {
+  const jar = cookies();
   const size = byteLength(`${name}=${value}`);
   if (size > MAX_COOKIE_BYTES) {
     console.warn(`[settings] skip set cookie "${name}" size=${size}b (>2KB)`);
     return false;
   }
-  cookies().set(name, value, options);
+  (jar as unknown as Awaited<ReturnType<typeof cookies>>).set(name, value, options);
   return true;
 }
 

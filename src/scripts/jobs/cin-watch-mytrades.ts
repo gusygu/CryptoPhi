@@ -349,7 +349,7 @@ async function main() {
   console.log(`[cin-watch] using account scope "${ACCOUNT_SCOPE}".`);
   await ensureSessionExists(SESSION_ID);
   const ownerUserId = await resolveRuntimeSessionOwner(SESSION_ID);
-  setServerRequestContext({ userId: ownerUserId, isAdmin: false });
+  setServerRequestContext({ userId: ownerUserId, isAdmin: false, sessionId: String(SESSION_ID) });
   const symbols = await fetchSymbols();
   await hydrateCursors(symbols);
   const initialSeq = await resolveNextCycleSeq(ownerUserId);

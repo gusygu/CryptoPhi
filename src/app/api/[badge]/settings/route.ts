@@ -57,7 +57,7 @@ export async function GET(
     effectiveBadge: badge,
     cookieBadge: badgeScope.badgeCookie,
     userId: session.userId,
-    resolvedFromSessionMap,
+    resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
     coinUniverse: settings.coinUniverse,
   });
 
@@ -110,7 +110,7 @@ export async function POST(
           effectiveBadge: badge,
           cookieBadge: badgeScope.badgeCookie,
           userId: session.userId,
-          resolvedFromSessionMap,
+          resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
           coinUniverse: persistedCoinUniverse ?? settings.coinUniverse,
         });
         const res = NextResponse.json(

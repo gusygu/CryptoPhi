@@ -3,7 +3,7 @@ import { db } from "@/core/db/db";
 import { runSystemRefresh } from "@/core/system/refresh";
 
 type StepStatus = "ok" | "warn" | "fail";
-type StepResult = { name: string; status: StepStatus; detail?: string };
+type StepResult = { name?: string; status: StepStatus; detail?: string };
 
 const symbolEnv = process.env.MATRIX_SMOKE_SYMBOLS ?? process.env.SYMBOLS;
 const maxSymbols = Math.max(1, Number(process.env.MATRIX_SMOKE_MAX_SYMBOLS ?? 3));
@@ -42,9 +42,10 @@ async function runStep(name: string, fn: () => Promise<StepResult | void>) {
   const started = Date.now();
   try {
     const res = (await fn()) ?? { status: "ok" as StepStatus };
-    const detail = res.detail ? ` - ${res.detail}` : "";
-    console.log(`[${res.status}] ${name}${detail} (${Date.now() - started}ms)`);
-    results.push({ name, status: res.status, detail: res.detail });
+    const detail = (res as StepResult).detail ? ` - ${(res as StepResult).detail}` : "";
+    const displayName = (res as StepResult).name ?? name;
+    console.log(`[${res.status}] ${displayName}${detail} (${Date.now() - started}ms)`);
+    results.push({ name: displayName, status: res.status, detail: (res as StepResult).detail });
   } catch (err: any) {
     const detail = err instanceof Error ? err.message : String(err ?? "error");
     console.error(`[fail] ${name}: ${detail}`);
@@ -56,7 +57,7 @@ async function checkUniverse(symbols: string[]): Promise<StepResult> {
   if (!symbols.length) {
     throw new Error("No symbols selected for smoke");
   }
-  return { status: "ok", detail: `symbols=${symbols.join(",")}` };
+  return { name: "universe", status: "ok", detail: `symbols=${symbols.join(",")}` };
 }
 
 async function runRefresh(symbols: string[]): Promise<StepResult> {
@@ -74,6 +75,7 @@ async function runRefresh(symbols: string[]): Promise<StepResult> {
     throw new Error(`refresh step failed: ${first.name} (${first.error ?? "error"})`);
   }
   return {
+    name: "refresh",
     status: "ok",
     detail: `steps=${okSteps}, duration=${refresh.finishedAt - refresh.startedAt}ms`,
   };
@@ -97,6 +99,7 @@ async function checkKlines(symbols: string[]): Promise<StepResult> {
     throw new Error(`no klines in last 24h for: ${missing.join(",")}`);
   }
   return {
+    name: "klines",
     status: "ok",
     detail: rows
       .map((r) => `${r.symbol}:${r.rows}`)
@@ -121,6 +124,7 @@ async function checkMatrices(): Promise<StepResult> {
     throw new Error("no matrices.dyn_values rows found");
   }
   return {
+    name: "matrices",
     status: "ok",
     detail: rows
       .map((r) => `${r.matrix_type}:${r.rows}`)

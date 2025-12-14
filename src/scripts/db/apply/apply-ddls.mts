@@ -63,7 +63,8 @@ async function run() {
       if (FROM && name < FROM) continue;
       if (ONLY && name !== ONLY) continue;
 
-      const label = path.relative(ROOT, abs);
+      const primaryRoot = ROOTS[0] ?? process.cwd();
+      const label = path.relative(primaryRoot, abs);
       const result = await applySqlFile(client, abs, { dryRun: DRY_RUN });
 
       if (result.skipped) {

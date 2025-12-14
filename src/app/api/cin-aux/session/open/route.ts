@@ -2,27 +2,22 @@ import { NextResponse } from "next/server";
 import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { withDbContext } from "@/core/db/pool_server";
 
-export async function POST(
-  req: Request,
-  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
-) {
-  const params =
-    typeof (context as any)?.params?.then === "function"
-      ? await (context as { params: Promise<{ badge?: string }> }).params
-      : (context as { params: { badge?: string } }).params;
-  const resolved = await resolveBadgeRequestContext(req as any, params);
-  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
-  const badge = resolved.badge;
-  const session = resolved.session;
+export const dynamic = "force-dynamic";
 
+export async function POST(req: Request) {
   try {
-    const response = await withDbContext(
+    const resolved = await resolveBadgeRequestContext(req as any, { badge: null });
+    if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+    const badge = resolved.badge;
+    const session = resolved.session;
+
+    return withDbContext(
       {
         userId: session.userId,
         sessionId: badge,
         isAdmin: session.isAdmin,
         path: (req as any)?.nextUrl?.pathname ?? "",
-        badgeParam: params?.badge ?? null,
+        badgeParam: null,
         resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
       },
       async (client) => {
@@ -65,12 +60,12 @@ export async function POST(
         );
       },
     );
-    return response;
-  } catch (err) {
-    console.error("open runtime session error:", err);
+  } catch (err: any) {
+    console.error("[cin-aux legacy] session/open error:", err);
     return NextResponse.json(
-      { ok: false, error: (err as Error).message },
-      { status: 500 }
+      { ok: false, error: "internal_error", message: String(err?.message ?? err) },
+      { status: 500 },
     );
   }
 }
+

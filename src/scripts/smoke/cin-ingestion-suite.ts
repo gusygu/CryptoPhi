@@ -3,7 +3,7 @@ import { db } from "@/core/db/db";
 import { getAccountBalances } from "@/core/sources/binanceAccount";
 
 type StepStatus = "ok" | "fail" | "skip";
-type StepResult = { name: string; status: StepStatus; detail?: string };
+type StepResult = { name?: string; status: StepStatus; detail?: string };
 
 const sessionId = Number(
   process.env.CIN_RUNTIME_SESSION_ID ??
@@ -35,9 +35,9 @@ async function runStep(
   const started = Date.now();
   try {
     const res = (await fn()) ?? { status: "ok" as StepStatus };
-    const detail = res.detail ? ` - ${res.detail}` : "";
-    console.log(`[${res.status}] ${name}${detail} (${Date.now() - started}ms)`);
-    results.push({ name, status: res.status, detail: res.detail });
+    const detail = (res as StepResult).detail ? ` - ${(res as StepResult).detail}` : "";
+    console.log(`[${res.status}] ${res.name ?? name}${detail} (${Date.now() - started}ms)`);
+    results.push({ name: res.name ?? name, status: res.status as StepStatus, detail: (res as StepResult).detail });
   } catch (err: any) {
     const detail = err instanceof Error ? err.message : String(err ?? "error");
     console.error(`[fail] ${name}: ${detail}`);
@@ -73,7 +73,7 @@ async function checkDdl(): Promise<StepResult> {
     const detail = missing.map(([s, t]) => `${s}.${t}`).join(", ");
     throw new Error(`Missing tables: ${detail}`);
   }
-  return { status: "ok", detail: "core tables present" };
+  return { name: "ddl", status: "ok", detail: "core tables present" };
 }
 
 async function checkSession(): Promise<StepResult> {
@@ -104,6 +104,7 @@ async function checkSession(): Promise<StepResult> {
     );
   }
   return {
+    name: "session",
     status: "ok",
     detail: `owner=${owner} status=${row.status ?? "null"} window=${row.window_label ?? "?"}`,
   };

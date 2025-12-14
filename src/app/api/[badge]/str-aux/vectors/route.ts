@@ -48,6 +48,7 @@ import {
   ensureWindowPoints,
   minSamplesTarget,
 } from "@/core/features/str-aux/vectors/ensureWindowPoints";
+import { getEffectiveSettings } from "@/lib/settings/server";
 
 // ---- (Optional) Pairs Index resolver (uncomment & set real path if desired)
 // import { resolveSymbolSelection } from "@/lib/markets/symbol-selection"; // TODO: adjust path
@@ -190,9 +191,27 @@ async function getMarketSymbolsFromApi(origin: string): Promise<string[]> {
 
 
 /** Resolve symbols: query → pairs index (optional) → market/pairs → fallback. */
-async function resolveSymbols(url: URL): Promise<string[]> {
+async function resolveSymbols(url: URL, allowedCoins?: Set<string>): Promise<string[]> {
   const explicit = parseSymbols(url);
-  if (explicit.length) return explicit;
+  if (explicit.length) {
+    const filtered = allowedCoins
+      ? explicit.filter((sym) => {
+          const upper = String(sym ?? "").toUpperCase();
+          if (upper.length < 6) return false;
+          const base = upper.slice(0, upper.length - 4);
+          const quote = upper.slice(-4);
+          return allowedCoins.has(base) && allowedCoins.has(quote);
+        })
+      : explicit;
+    if (filtered.length) return filtered;
+  }
+
+  if (allowedCoins && allowedCoins.has("USDT") && allowedCoins.size > 1) {
+    const derived = Array.from(allowedCoins)
+      .filter((c) => c !== "USDT")
+      .map((base) => `${base}USDT`);
+    if (derived.length) return derived;
+  }
 
   // If you want to prefer your pairs-index resolver, uncomment this try/catch,
   // set the import path above, and return selection.symbols when available.
@@ -204,7 +223,16 @@ async function resolveSymbols(url: URL): Promise<string[]> {
   // }
 
   const origin = url.origin || (process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000");
-  return getMarketSymbolsFromApi(origin);
+  const fallback = await getMarketSymbolsFromApi(origin);
+  return allowedCoins
+    ? fallback.filter((sym) => {
+        const upper = String(sym ?? "").toUpperCase();
+        if (upper.length < 6) return false;
+        const base = upper.slice(0, upper.length - 4);
+        const quote = upper.slice(-4);
+        return allowedCoins.has(base) && allowedCoins.has(quote);
+      })
+    : fallback;
 }
 
 /** Convert SamplingPoint[] → VectorPoint[] (use mid as price). */
@@ -435,7 +463,18 @@ export async function GET(
   const session = resolved.session;
   try {
     const url = new URL(req.url);
-    const symbols = await resolveSymbols(url);
+    const allowedCoins = new Set(
+      (await getEffectiveSettings({ userId: session.userId, badge: resolved.badge })).coinUniverse.map(
+        (c: string) => c.toUpperCase(),
+      ),
+    );
+    const symbols = await resolveSymbols(url, allowedCoins);
+    if (!symbols.length) {
+      return NextResponse.json(
+        { ok: false, error: "empty_coin_universe", symbols: [], coinsUsed: Array.from(allowedCoins) },
+        { status: 400, headers: { "Cache-Control": "no-store, max-age=0" } },
+      );
+    }
     ensureSamplingRuntime();
 
     const windowKey = pickWindowKey(url.searchParams.get("window") ?? "30m");
@@ -549,7 +588,27 @@ export async function GET(
     });
 
     return NextResponse.json(
-      { ok: true, ts: Date.now(), window: windowKey, bins, symbols, vectors, diag, errors },
+      {
+        ok: true,
+        ts: Date.now(),
+        window: windowKey,
+        bins,
+        symbols,
+        vectors,
+        diag,
+        errors,
+        ...(process.env.DEBUG_ISOLATION === "1"
+          ? {
+              debugIsolation: {
+                badge: resolved.badge,
+                userId: session.userId,
+                effectiveCoins: Array.from(allowedCoins),
+                coinsUsed: symbols,
+                allowedSymbolsCount: symbols.length,
+              },
+            }
+          : {}),
+      },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
   } catch (err: any) {
@@ -595,13 +654,33 @@ export async function POST(
     if (!symbols.length && b?.points_map && typeof b.points_map === "object") {
       symbols = Object.keys(b.points_map);
     }
-    if (!symbols.length) {
-      const origin = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-      symbols = await getMarketSymbolsFromApi(origin);
-    }
     symbols = symbols.map(s => String(s).toUpperCase()).filter(Boolean);
+    const allowedCoins = new Set(
+      (await getEffectiveSettings({ userId: session.userId, badge: resolved.badge })).coinUniverse.map(
+        (c: string) => c.toUpperCase(),
+      ),
+    );
+    const filtered = symbols.filter((sym) => {
+      const upper = String(sym ?? "").toUpperCase();
+      if (upper.length < 6) return false;
+      const base = upper.slice(0, upper.length - 4);
+      const quote = upper.slice(-4);
+      return allowedCoins.has(base) && allowedCoins.has(quote);
+    });
+    symbols =
+      filtered.length ||
+      (allowedCoins.has("USDT") && allowedCoins.size > 1)
+        ? filtered.length
+          ? filtered
+          : Array.from(allowedCoins)
+              .filter((c) => c !== "USDT")
+              .map((base) => `${base}USDT`)
+        : [];
     if (!symbols.length) {
-      return NextResponse.json({ ok: false, error: "no symbols available" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "empty_coin_universe", symbols: [], coinsUsed: Array.from(allowedCoins) },
+        { status: 400 },
+      );
     }
 
     const windowKey = pickWindowKey(b?.window ?? "30m");

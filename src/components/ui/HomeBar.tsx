@@ -33,6 +33,7 @@ type NavLink = { href: string; label: string };
 
 const FEATURE_LINKS: NavLink[] = [
   { href: "/", label: "Home" },
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/matrices", label: "Matrices" },
   { href: "/dynamics", label: "Dynamics" },
   { href: "/cin-aux", label: "Cin-Aux" },
@@ -106,18 +107,25 @@ function withBadge(href: string, badge: string): string {
   if (!href.startsWith("/")) return href;
   if (href.startsWith("http")) return href;
   if (GLOBAL_PATH_PREFIXES.some((p) => href.startsWith(p))) return href;
+  if (href === "/") return badge && badge !== "global" ? `/${badge}` : "/";
   if (href.startsWith("/api/")) {
     const rest = href.slice("/api/".length);
     return `/api/${badge}/${rest}`;
   }
-  if (href === "/") return `/${badge}/dashboard`;
   const trimmed = href.replace(/^\/+/, "");
   return `/${badge}/${trimmed}`;
 }
 
-function isRouteActive(pathname: string, href: string) {
-  if (href === "/") return pathname === "/" || pathname.endsWith("/dashboard");
-  return pathname === href || pathname.startsWith(`${href}/`);
+function isRouteActive(pathname: string, href: string, { exact = false }: { exact?: boolean } = {}) {
+  const normalize = (path: string) => {
+    const trimmed = path.replace(/\/+$/, "");
+    return trimmed || "/";
+  };
+  const current = normalize(pathname || "/");
+  const target = normalize(href);
+  if (target === "/") return current === "/";
+  if (exact) return current === target;
+  return current === target || current.startsWith(`${target}/`);
 }
 
 function safeGetMuted(): boolean {
@@ -719,7 +727,7 @@ export default function HomeBar({ className = "" }: { className?: string }) {
           <nav className="mt-3 space-y-1" aria-label="Primary">
             {FEATURE_LINKS.map((item) => {
               const target = withBadge(item.href, badge);
-              const active = isRouteActive(pathname, target);
+              const active = isRouteActive(pathname, target, { exact: item.href === "/" });
               const cls = active
                 ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-100 shadow-[0_0_14px_rgba(16,185,129,0.25)]"
                 : "border-zinc-800/80 bg-black/30 text-zinc-300 hover:border-emerald-400/40 hover:text-emerald-100";

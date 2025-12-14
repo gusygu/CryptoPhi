@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { sql } from "@/core/db/db";
 
 export async function GET(
-  _req: Request,
+  _req: NextRequest,
   context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
 ) {
   const params =

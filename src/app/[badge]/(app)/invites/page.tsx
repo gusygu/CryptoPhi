@@ -1,2 +1,2 @@
-export { metadata } from "../../../invites/page";
+export { metadata } from "../../../invites/metadata";
 export { default } from "../../../invites/page";

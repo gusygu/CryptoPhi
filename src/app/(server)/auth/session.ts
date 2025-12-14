@@ -22,7 +22,7 @@ export type UserSession = {
   status: UserSessionStatus;
 };
 
-export type SessionCtx = UserSession & { badge: string };
+export type SessionCtx = UserSession & { badge: string; resolvedFromSessionMap?: boolean };
 
 type ApiResult =
   | { ok: true; ctx: SessionCtx }

@@ -97,7 +97,7 @@ export default function InvitesPage() {
         </header>
 
         <section className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/60 flex flex-col gap-2 text-sm">
-          {loading && <p className="text-xs opacity-70">Loading invite status…</p>}
+          {loading && <p className="text-xs opacity-70">Loading invite status.</p>}
 
           {!loading && !invite && (
             <form onSubmit={handleCreateInvite} className="space-y-3">
@@ -117,7 +117,7 @@ export default function InvitesPage() {
                 disabled={submitting}
                 className="inline-flex items-center justify-center rounded-md border border-emerald-500/60 bg-emerald-600/50 px-4 py-2 text-sm font-medium text-emerald-50 disabled:opacity-60"
               >
-                {submitting ? "Sending…" : "Send invite"}
+                {submitting ? "Sending." : "Send invite"}
               </button>
               <p className="text-[11px] text-slate-400">
                 You have one invite. Once you send it, it can&apos;t be reassigned.
@@ -137,7 +137,7 @@ export default function InvitesPage() {
                 ) : (
                   <span className="text-amber-300">pending</span>
                 )}{" "}
-                ({invite.uses}/{invite.maxUses}) · created {new Date(invite.createdAt).toLocaleString()}
+                ({invite.uses}/{invite.maxUses}) ú created {new Date(invite.createdAt).toLocaleString()}
               </p>
             </div>
           )}
@@ -149,7 +149,7 @@ export default function InvitesPage() {
                 {invitedUser.name ?? invitedUser.email}
                 <span className="text-[11px] opacity-70">
                   {" "}
-                  · joined {new Date(invitedUser.createdAt).toLocaleString()}
+                  ú joined {new Date(invitedUser.createdAt).toLocaleString()}
                 </span>
               </p>
             </div>

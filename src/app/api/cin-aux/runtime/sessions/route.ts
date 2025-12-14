@@ -3,27 +3,22 @@ import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { withDbContext } from "@/core/db/pool_server";
 import { mapRuntimeSessionRow } from "@/core/features/cin-aux/runtimeQueries";
 
-// GET: list sessions
-export async function GET(
-  req: Request,
-  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
-) {
-  const params =
-    typeof (context as any)?.params?.then === "function"
-      ? await (context as { params: Promise<{ badge?: string }> }).params
-      : (context as { params: { badge?: string } }).params;
-  const resolved = await resolveBadgeRequestContext(req as any, params);
-  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
-  const badge = resolved.badge;
+export const dynamic = "force-dynamic";
+
+export async function GET(req: Request) {
   try {
+    const resolved = await resolveBadgeRequestContext(req as any, { badge: null });
+    if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+    const badge = resolved.badge;
     const session = resolved.session;
-    const response = await withDbContext(
+
+    return withDbContext(
       {
         userId: session.userId,
         sessionId: badge,
         isAdmin: session.isAdmin,
         path: (req as any)?.nextUrl?.pathname ?? "",
-        badgeParam: params?.badge ?? null,
+        badgeParam: null,
         resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
       },
       async (client) => {
@@ -43,35 +38,29 @@ export async function GET(
         });
       },
     );
-    return response;
   } catch (err: any) {
-    console.error("[cin-aux] runtime sessions GET error:", err?.message ?? err);
-    // degrade gracefully: return empty list so client UI stays usable
-    return NextResponse.json([], { status: 200, headers: { "x-cin-aux-error": String(err?.message ?? err) } });
+    console.error("[cin-aux legacy] runtime sessions error:", err);
+    return NextResponse.json(
+      { ok: false, error: "internal_error", message: String(err?.message ?? err) },
+      { status: 500 },
+    );
   }
 }
 
-// POST: create session
-export async function POST(
-  req: Request,
-  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
-) {
-  const params =
-    typeof (context as any)?.params?.then === "function"
-      ? await (context as { params: Promise<{ badge?: string }> }).params
-      : (context as { params: { badge?: string } }).params;
-  const resolved = await resolveBadgeRequestContext(req as any, params);
-  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
-  const badge = resolved.badge;
-  const session = resolved.session;
+export async function POST(req: Request) {
   try {
-    const response = await withDbContext(
+    const resolved = await resolveBadgeRequestContext(req as any, { badge: null });
+    if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+    const badge = resolved.badge;
+    const session = resolved.session;
+
+    return withDbContext(
       {
         userId: session.userId,
         sessionId: badge,
         isAdmin: session.isAdmin,
         path: (req as any)?.nextUrl?.pathname ?? "",
-        badgeParam: params?.badge ?? null,
+        badgeParam: null,
         resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
       },
       async (client) => {
@@ -114,12 +103,12 @@ export async function POST(
         );
       },
     );
-    return response;
   } catch (err: any) {
-    console.error("POST runtime/sessions error:", err);
+    console.error("[cin-aux legacy] runtime sessions POST error:", err);
     return NextResponse.json(
-      { ok: false, error: err.message },
-      { status: 500 }
+      { ok: false, error: "internal_error", message: String(err?.message ?? err) },
+      { status: 500 },
     );
   }
 }
+

@@ -10,6 +10,8 @@ import { applyGfmShiftAndStreams, type ShiftWindowState, type StreamsState } fro
 import type { SamplingWindowKey } from '@/core/features/str-aux/sampling';
 import type { StatsOptions } from '@/core/features/str-aux/calc/stats';
 import { resolveSymbolSelection } from '@/core/features/str-aux/symbols';
+import { getEffectiveSettings } from '@/lib/settings/server';
+import { withDbContext } from '@/core/db/pool_server';
 
 type WindowKey = SamplingWindowKey;
 
@@ -96,18 +98,41 @@ export async function GET(
   const badge = resolved.badge;
   try {
     const url = new URL(req.url);
-    const selection = await resolveSymbolSelection(url);
-    const symbols = selection.symbols;
     const windowKey = parseWindow(url.searchParams.get('window'));
     const binsN = parseBinsParam(url.searchParams.get('bins'), 256);
     const appSessionId = (url.searchParams.get('sessionId') ?? 'ui').slice(0, 64);
     const epsPct = Number(url.searchParams.get('eps') ?? '0.35');
     const kCycles = Math.max(1, Math.floor(Number(url.searchParams.get('k') ?? '5')));
     const now = Date.now();
+    const baseSelection = await resolveSymbolSelection(url);
 
-    if (!symbols.length) {
-      return NextResponse.json({ ok: true, symbols: [], out: {}, window: windowKey, ts: now });
-    }
+    const payload = await withDbContext(
+      {
+        userId: resolved.session.userId,
+        sessionId: badge,
+        isAdmin: resolved.session.isAdmin,
+        path: url.pathname,
+        badgeParam: params?.badge ?? null,
+        resolvedFromSessionMap: (resolved.session as any)?.resolvedFromSessionMap ?? false,
+      },
+      async (client) => {
+        const allowedCoins = new Set(
+          (await getEffectiveSettings({ userId: resolved.session.userId, badge, client })).coinUniverse.map((c) =>
+            c.toUpperCase(),
+          ),
+        );
+        const symbols = (baseSelection.symbols ?? []).filter((sym) => {
+          const upper = String(sym ?? '').toUpperCase();
+          if (upper.length < 6) return false;
+          const base = upper.slice(0, upper.length - 4);
+          const quote = upper.slice(-4);
+          return allowedCoins.has(base) && allowedCoins.has(quote);
+        });
+        return { allowedCoins, symbols };
+      },
+    );
+
+    const symbols = payload.symbols;
 
     const baseStatsOptions: StatsOptions = {
       idhr: { alpha: 2.5, sMin: 1e-6, smooth: 3, topK: 8 },
@@ -324,6 +349,8 @@ export async function GET(
       }
     }
 
+    const allowedCoinsArr = payload?.allowedCoins ? Array.from(payload.allowedCoins) : [];
+
     return NextResponse.json({
       ok: true,
       symbols,
@@ -331,14 +358,25 @@ export async function GET(
       window: windowKey,
       ts: now,
       universe: {
-        quote: selection.quote,
-        quotes: selection.quotes,
-        bases: selection.bases,
-        defaults: selection.defaults,
-        extras: selection.extras,
-        explicit: selection.explicit,
-        source: selection.source,
+        quote: baseSelection.quote,
+        quotes: baseSelection.quotes,
+        bases: baseSelection.bases,
+        defaults: baseSelection.defaults,
+        extras: baseSelection.extras,
+        explicit: baseSelection.explicit,
+        source: baseSelection.source,
       },
+      ...(process.env.DEBUG_ISOLATION === "1"
+        ? {
+            debugIsolation: {
+              badge,
+              userId: resolved.session.userId,
+              effectiveCoins: allowedCoinsArr,
+              coinsUsed: symbols,
+              allowedSymbolsCount: symbols.length,
+            },
+          }
+        : {}),
     });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });

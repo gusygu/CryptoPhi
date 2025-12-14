@@ -70,11 +70,16 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
   let ownerUserId: string | null = null;
   let badge: string | null = null;
   let resolvedFromSessionMap = false;
+  let coinsParam: string | null = null;
+  let coins: string[] = [];
+  let coinsUsed: string[] = [];
+  let divisor = 0;
   try {
     const paramsMaybe = (context as any)?.params;
     const params =
       paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
     const url = new URL(req.url);
+    coinsParam = url.searchParams.get("coins");
     const resolved = await resolveBadgeRequestContext(req, params);
     if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
     badge = resolved.badge;
@@ -89,6 +94,22 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
     await client.query("select auth.set_request_context($1,$2,$3)", [ownerUserId, resolved.session.isAdmin ?? false, badge]);
     const effectiveSettings = await getEffectiveSettings({ userId: ownerUserId, badge, client });
     const allowedCoins = dedupeCoins(effectiveSettings.coinUniverse);
+    const requestedCoins = coinsParam
+      ? coinsParam
+          .split(/[,\s]+/)
+          .map((c) => c.trim().toUpperCase())
+          .filter(Boolean)
+      : [];
+    coinsUsed = requestedCoins.length
+      ? requestedCoins.filter((c) => allowedCoins.includes(c))
+      : allowedCoins;
+    if (!coinsUsed.length) {
+      await client.query("ROLLBACK");
+      return NextResponse.json(
+        { ok: false, error: "empty_coin_universe", coins: [], resolved: { badge, userId: ownerUserId } },
+        { status: 400, headers: CACHE_HEADERS },
+      );
+    }
     const appSessionId = badge.slice(0, 64);
 
     const tsParam = Number(url.searchParams.get("ts") ?? url.searchParams.get("timestamp"));
@@ -118,7 +139,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
       allowedCoins,
       client,
     );
-    const dedupedCoins = dedupeCoins([...initialCoins, ...coinsFromGrid(idPctGridRaw)]);
+    const dedupedCoins = dedupeCoins([...initialCoins, ...coinsFromGrid(idPctGridRaw)]).filter((c) => coinsUsed.includes(c));
     if (!dedupedCoins.length) {
       await client.query("COMMIT");
       return NextResponse.json(
@@ -126,7 +147,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
         { headers: CACHE_HEADERS },
       );
     }
-    let coins = dedupedCoins;
+    coins = dedupedCoins;
     if (!coins.includes("USDT")) coins = ["USDT", ...coins];
 
     const availability: PairAvailabilitySnapshot = await resolvePairAvailability(coins);
@@ -137,7 +158,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
     const { balances, source: balanceSource } = await readBalancesFromLedger(coins, ownerUserId, client);
 
     const kParam = Number(url.searchParams.get("k"));
-    const divisor = Number.isFinite(kParam) && kParam > 0
+    divisor = Number.isFinite(kParam) && kParam > 0
       ? Math.floor(kParam)
       : Math.max(1, coins.length - 1);
 
@@ -276,7 +297,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
         userId: ownerUserId,
         message,
         resolved: { badge, userId: ownerUserId, sessionId: badge },
-        coinsUsed: [],
+        coinsUsed,
         resolvedFromSessionMap,
       },
       { status: 500, headers: { ...CACHE_HEADERS, "Cache-Control": "no-store, max-age=0" } },

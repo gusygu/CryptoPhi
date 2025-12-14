@@ -38,12 +38,12 @@ export async function GET(
           const live = await liveFromSources(coins).catch(() => null);
           if (live) {
             const derived = await computeFromDbAndLive({
-              coins: live.coins,
+              coins: [...live.coins],
               nowTs: live.matrices.benchmark.ts,
               liveBenchmark: [[]],
             }).catch(() => null);
             sample = {
-              coins: live.coins,
+              coins: [...live.coins],
               benchmarkTs: live.matrices.benchmark.ts,
               derived: !!derived,
             };
