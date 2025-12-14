@@ -7,6 +7,7 @@ import { withDbContext } from "@/core/db/pool_server";
 import { upsertSessionCoinUniverse, upsertUserCoinUniverse } from "@/lib/settings/coin-universe";
 import { adoptSessionRequestContext } from "@/lib/server/request-context";
 import { resolveBadgeScope } from "@/lib/server/badge-scope";
+import { logIsolation } from "@/lib/server/isolation-log";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -49,6 +50,16 @@ export async function GET(
     coinUniverse: settings.coinUniverse,
     coins: settings.coinUniverse,
   };
+
+  logIsolation({
+    route: "/api/[badge]/settings:GET",
+    badgeParam: params?.badge ?? null,
+    effectiveBadge: badge,
+    cookieBadge: badgeScope.badgeCookie,
+    userId: session.userId,
+    resolvedFromSessionMap,
+    coinUniverse: settings.coinUniverse,
+  });
 
   if (!debug) {
     return NextResponse.json(shared, { headers: NO_STORE });
@@ -93,6 +104,15 @@ export async function POST(
           incoming,
           { client, session, sessionKey: badge },
         );
+        logIsolation({
+          route: "/api/[badge]/settings:POST",
+          badgeParam: params?.badge ?? null,
+          effectiveBadge: badge,
+          cookieBadge: badgeScope.badgeCookie,
+          userId: session.userId,
+          resolvedFromSessionMap,
+          coinUniverse: persistedCoinUniverse ?? settings.coinUniverse,
+        });
         const res = NextResponse.json(
           {
             ok: true,
