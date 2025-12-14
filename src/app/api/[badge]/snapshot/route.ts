@@ -1,6 +1,6 @@
 // src/app/api/snapshot/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentSession } from "@/app/(server)/auth/session";
+import { getCurrentSession, resolveUserSessionForBadge } from "@/app/(server)/auth/session";
 import {
   listSnapshotsForUser,
   createSnapshotForUser,
@@ -27,14 +27,7 @@ const parseBody = (payload: unknown): SnapshotRequestBody => {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-type RouteContext = { params: { badge?: string } };
-
-function resolveBadge(req: NextRequest, ctx?: RouteContext) {
-  const fromParams = ctx?.params?.badge ?? "";
-  const fromHeader = req.headers.get("x-app-session") || "";
-  const fromPath = req.nextUrl.pathname.split("/").filter(Boolean)[1] ?? "";
-  return (fromParams || fromHeader || fromPath || "").trim() || "global";
-}
+type RouteContext = { params: { badge?: string } } | { params: Promise<{ badge?: string }> };
 
 export async function GET(req: NextRequest, ctx: RouteContext) {
   try {
@@ -45,7 +38,14 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
         { status: 401 }
       );
     }
-    const badge = resolveBadge(req, ctx);
+    const paramsMaybe = (ctx as any)?.params;
+    const params =
+      paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
+    const badge = (params?.badge ?? "").trim();
+    const resolved = badge ? await resolveUserSessionForBadge(badge) : null;
+    if (badge && resolved && resolved.userId !== session.userId) {
+      return NextResponse.json({ ok: false, error: "forbidden_badge" }, { status: 403 });
+    }
     const snapshots = await listSnapshotsForUser(session.email, 80, badge);
     return NextResponse.json({ ok: true, snapshots });
   } catch (e: any) {
@@ -66,7 +66,14 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     }
     const raw = await req.json().catch(() => ({}));
     const dto = parseBody(raw);
-    const badge = resolveBadge(req, ctx);
+    const paramsMaybe = (ctx as any)?.params;
+    const params =
+      paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
+    const badge = (params?.badge ?? "").trim();
+    const resolved = badge ? await resolveUserSessionForBadge(badge) : null;
+    if (badge && resolved && resolved.userId !== session.userId) {
+      return NextResponse.json({ ok: false, error: "forbidden_badge" }, { status: 403 });
+    }
 
     const snapshot = await createSnapshotForUser({
       email: session.email,
