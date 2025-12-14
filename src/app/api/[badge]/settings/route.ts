@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getAll, serializeSettingsCookie } from "@/lib/settings/server";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { withDbContext } from "@/core/db/pool_server";
 import { upsertSessionCoinUniverse, upsertUserCoinUniverse } from "@/lib/settings/coin-universe";
 import { adoptSessionRequestContext } from "@/lib/server/request-context";
@@ -22,12 +22,10 @@ export async function GET(
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
   const badgeScope = resolveBadgeScope(req, { badge: params?.badge ?? null });
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
   const badge = (badgeScope.effectiveBadge || "").trim();
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) {
-    return NextResponse.json(auth.body, { status: auth.status });
-  }
-  const session = auth.ctx;
+  const session = resolved.session;
   if (!badge) {
     return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });
   }
@@ -71,12 +69,12 @@ export async function POST(
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
   const badgeScope = resolveBadgeScope(req, { badge: params?.badge ?? null });
-  const badge = (badgeScope.effectiveBadge || "").trim();
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) {
-    return NextResponse.json(auth.body, { status: auth.status });
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) {
+    return NextResponse.json(resolved.body, { status: resolved.status });
   }
-  const session = auth.ctx;
+  const badge = (badgeScope.effectiveBadge || "").trim();
+  const session = resolved.session;
   if (!badge) {
     return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });
   }
@@ -124,12 +122,12 @@ export async function PUT(
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
   const badgeScope = resolveBadgeScope(req, { badge: params?.badge ?? null });
-  const badge = (badgeScope.effectiveBadge || "").trim();
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) {
-    return NextResponse.json(auth.body, { status: auth.status });
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) {
+    return NextResponse.json(resolved.body, { status: resolved.status });
   }
-  const session = auth.ctx;
+  const badge = (badgeScope.effectiveBadge || "").trim();
+  const session = resolved.session;
   const isAdmin = !!session?.isAdmin;
   if (!badge) {
     return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });

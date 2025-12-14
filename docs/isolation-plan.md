@@ -17,3 +17,6 @@ Trade and system refresh endpoints now resolve badge/session via `resolveBadgeRe
 
 Step 6 — Str-aux vectors migrated to badge context  
 Str-aux vectors GET now unwraps params safely, resolves badge via `resolveBadgeRequestContext`, and drops legacy auth helper, aligning it with the isolation pattern.
+
+Step 7 — Admin audit + settings migrated to badge context  
+Admin audit routes and badge settings now use `resolveBadgeRequestContext` instead of the legacy helper, keeping badge/user scoping consistent across admin surfaces.
