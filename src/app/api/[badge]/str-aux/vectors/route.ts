@@ -583,10 +583,9 @@ export async function POST(
     typeof (context as any)?.params?.then === "function"
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
-  const badge = params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
-  const session = auth.ctx;
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const session = resolved.session;
   try {
     const b = await req.json().catch(() => ({} as any));
     ensureSamplingRuntime();
