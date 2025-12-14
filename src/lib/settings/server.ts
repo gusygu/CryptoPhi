@@ -203,6 +203,38 @@ export async function setAll(nextValue: unknown): Promise<AppSettings> {
   return settings;
 }
 
+// Canonical helper to resolve effective settings for a given user/badge context.
+// Prefer passing both userId and badge (sessionId) to avoid leaking another user's universe.
+export async function getEffectiveSettings(params: {
+  userId?: string | null;
+  badge: string;
+  client?: PoolClient | null;
+}): Promise<AppSettings> {
+  const sessionId = (params.badge ?? "").trim();
+  if (!sessionId) throw new Error("missing_session");
+
+  const resolved = params.userId
+    ? { userId: params.userId, isAdmin: false }
+    : await resolveUserSessionForBadge(sessionId);
+
+  const userId = resolved?.userId ?? null;
+  const isAdmin = !!resolved?.isAdmin;
+
+  // Use the existing universe resolver with explicit context
+  const coinUniverse = await resolveCoinsFromSettings({
+    userId,
+    sessionId,
+    client: params.client ?? null,
+  });
+
+  // Fall back to the default settings for non-universe fields
+  const base = migrateSettings(DEFAULT_SETTINGS);
+  return {
+    ...base,
+    coinUniverse,
+  };
+}
+
 export async function getEffectiveUniverseForUser(opts: {
   userId: string;
   sessionId: string;

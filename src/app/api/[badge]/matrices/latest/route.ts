@@ -14,7 +14,7 @@ import {
 import { fetchOpeningGridFromView } from "@/core/features/matrices/opening";
 import { fetchSnapshotBenchmarkGrid } from "@/core/features/matrices/snapshot";
 import { fetchTradeBenchmarkGrid } from "@/core/features/matrices/trade";
-import { resolveCoinsFromSettings } from "@/lib/settings/server";
+import { getEffectiveSettings } from "@/lib/settings/server";
 import { fetchPairUniverseCoins } from "@/lib/settings/coin-universe";
 // typed downstream import from matrices frozen helpers (no runtime impact)
 import type {
@@ -492,9 +492,8 @@ export async function GET(
     await client.query("BEGIN");
     await client.query("select auth.set_request_context($1,$2,$3)", [userId, resolved.session.isAdmin ?? false, badge]);
 
-    const allowedCoins = normalizeCoins(
-      await resolveCoinsFromSettings({ userId, sessionId: badge, client }),
-    );
+    const effective = await getEffectiveSettings({ userId, badge, client });
+    const allowedCoins = normalizeCoins(effective.coinUniverse);
 
     const q = await parseQuery(req, badge);
     const appSessionId = badge;

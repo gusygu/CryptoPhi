@@ -12,7 +12,9 @@ import {
   parseStrAuxQuery,
   prependToken,
 } from "../request";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
+import { getEffectiveSettings } from "@/lib/settings/server";
+import { withDbContext } from "@/core/db/pool_server";
 
 export const dynamic = "force-dynamic";
 
@@ -64,11 +66,18 @@ function buildSession(symbol: string, coin: CoinOut, appSessionId: string) {
   };
 }
 
-export async function GET(req: NextRequest, context: { params: { badge?: string } }) {
+export async function GET(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
   const url = req.nextUrl;
-  const badge = context?.params?.badge ?? "";
-  const auth = await requireUserSessionApi(badge);
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const paramsMaybe = (context as any)?.params;
+  const params =
+    paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const badge = resolved.badge;
+  const session = resolved.session;
 
   const query = parseStrAuxQuery(url, {
     defaultSessionId: badge,
@@ -78,20 +87,32 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
   });
   const appSessionId = (badge || "").trim();
   if (!appSessionId) {
-    return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401, headers: NO_STORE });
   }
   query.appSessionId = appSessionId;
   const { pair } = parseBaseQuote(url);
   const tokens = prependToken(query.tokens, pair);
 
-  const payload = await buildStrAuxBins({
-    tokens,
-    window: query.window,
-    bins: query.bins,
-    allowUnverified: query.allowUnverified,
-    hideNoData: false,
-    appSessionId,
-  });
+  const payload = await withDbContext(
+    {
+      userId: session.userId,
+      sessionId: badge,
+      isAdmin: session.isAdmin,
+      path: req.nextUrl.pathname,
+      badgeParam: params?.badge ?? null,
+      resolvedFromSessionMap: (session as any)?.resolvedFromSessionMap ?? false,
+    },
+    async (client) =>
+      buildStrAuxBins({
+        tokens,
+        window: query.window,
+        bins: query.bins,
+        allowUnverified: query.allowUnverified,
+        hideNoData: false,
+        appSessionId,
+        settingsOverride: await getEffectiveSettings({ userId: session.userId, badge, client }),
+      }),
+  );
 
   // Prefer explicit pair if it returned ok; otherwise pick the first ok symbol
   const selectionOrder = prependToken(payload.symbols, pair);

@@ -10,7 +10,7 @@ import {
 import { DEFAULT_TIER_RULES } from "@/core/features/moo-aux/tiers";
 import { resolvePairAvailability, maskUnavailableMatrix } from "@/lib/markets/availability";
 import type { PairAvailabilitySnapshot } from "@/lib/markets/availability";
-import { resolveCoinsFromSettings } from "@/lib/settings/server";
+import { getEffectiveSettings, resolveCoinsFromSettings } from "@/lib/settings/server";
 import { computeSampledMetrics } from "@/core/features/str-aux/calc/panel";
 import type { StatsOptions } from "@/core/features/str-aux/calc/stats";
 import type { SamplingWindowKey } from "@/core/features/str-aux/sampling";
@@ -87,7 +87,8 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
     client = await getPool().connect();
     await client.query("BEGIN");
     await client.query("select auth.set_request_context($1,$2,$3)", [ownerUserId, resolved.session.isAdmin ?? false, badge]);
-    const allowedCoins = dedupeCoins(await resolveCoinsFromSettings({ userId: ownerUserId, sessionId: badge, client }));
+    const effectiveSettings = await getEffectiveSettings({ userId: ownerUserId, badge, client });
+    const allowedCoins = dedupeCoins(effectiveSettings.coinUniverse);
     const appSessionId = badge.slice(0, 64);
 
     const tsParam = Number(url.searchParams.get("ts") ?? url.searchParams.get("timestamp"));
