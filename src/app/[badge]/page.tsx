@@ -5,6 +5,7 @@ export default async function BadgeIndex({
 }: {
   params: { badge?: string };
 }) {
-  const badge = (params?.badge ?? "global").trim() || "global";
+  const { badge: badgeParam } = await Promise.resolve(params);
+  const badge = (badgeParam ?? "global").trim() || "global";
   redirect(`/${badge}/dashboard`);
 }
