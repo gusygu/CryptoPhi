@@ -2,6 +2,7 @@
 // Opening grid helper backed by market.klines (Binance-ingested data).
 
 import { db } from "@/core/db/db";
+import type { PoolClient } from "pg";
 
 export type OpeningArgs = {
   coins: string[];           // uppercase coin universe
@@ -22,7 +23,8 @@ const cacheKeyForOpening = (args: OpeningArgs, window: string, pivot: string) =>
 
 async function loadOpeningFromDynValues(
   coins: string[],
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null
 ): Promise<{ ts: number; grid: Grid } | null> {
   if (!coins.length) return null;
   const upperCoins = coins.map((c) => c.toUpperCase());
@@ -32,7 +34,8 @@ async function loadOpeningFromDynValues(
   const sessionKey = (appSessionId ?? "global").trim() || "global";
 
   try {
-    const { rows } = await db.query<{
+    const executor = client ? client.query.bind(client) : db.query.bind(db);
+    const { rows } = await executor<{
       base: string;
       quote: string;
       value: string | number;
@@ -87,7 +90,7 @@ async function loadOpeningFromDynValues(
 }
 
 export async function fetchOpeningGridFromView(
-  args: OpeningArgs
+  args: OpeningArgs & { client?: PoolClient | null }
 ): Promise<{ ts: number; grid: Grid }> {
   const coins = Array.from(new Set(args.coins.map((c) => c.toUpperCase())));
   const n = coins.length;
@@ -95,7 +98,7 @@ export async function fetchOpeningGridFromView(
   const pivot = (args.quote ?? "USDT").toUpperCase();
   const cacheKey = cacheKeyForOpening(args, windowLabel, pivot);
 
-  const dbOpening = await loadOpeningFromDynValues(coins, args.appSessionId);
+  const dbOpening = await loadOpeningFromDynValues(coins, args.appSessionId, args.client ?? null);
   if (dbOpening) {
     openingTsCache.set(cacheKey, dbOpening.ts);
     return { ts: dbOpening.ts, grid: dbOpening.grid };
@@ -114,6 +117,7 @@ export async function getOpeningPairValue(args: {
   appSessionId?: string | null;
   window?: string;
   openingTs?: number;
+  client?: PoolClient | null;
 }): Promise<{ ts: number | null; price: number | null }> {
   const { base, quote } = args;
   const { grid, ts } = await fetchOpeningGridFromView({
@@ -122,6 +126,7 @@ export async function getOpeningPairValue(args: {
     appSessionId: args.appSessionId ?? null,
     window: args.window ?? DEFAULT_WINDOW,
     openingTs: args.openingTs,
+    client: args.client ?? null,
   });
   return { ts, price: grid?.[0]?.[1] ?? null };
 }

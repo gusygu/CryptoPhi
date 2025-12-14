@@ -1,6 +1,6 @@
 // src/app/api/str-aux/stats/route.ts
 import { NextResponse } from 'next/server';
-import { requireUserSession } from '@/app/(server)/auth/session';
+import { requireUserSessionApi } from '@/app/(server)/auth/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -83,8 +83,17 @@ const updateStreamScalar = (row: StreamScalar | undefined, next: number | null):
   return { prev: prevCur, cur: next, greatest: greatest > 0 ? greatest : null };
 };
 
-export async function GET(req: Request) {
-  await requireUserSession();
+export async function GET(
+  req: Request,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const params =
+    typeof (context as any)?.params?.then === "function"
+      ? await (context as { params: Promise<{ badge?: string }> }).params
+      : (context as { params: { badge?: string } }).params;
+  const badge = params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
   try {
     const url = new URL(req.url);
     const selection = await resolveSymbolSelection(url);

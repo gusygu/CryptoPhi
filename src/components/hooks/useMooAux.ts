@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "next/navigation";
 
 export type MooGrid = Record<string, Record<string, number | null>>;
 export type MooResp = {
@@ -32,6 +33,11 @@ export function useMooAux(opts: UseMooAuxOpts = {}) {
   const [err, setErr] = useState<string | null>(null);
   const [errorObj, setErrorObj] = useState<Error | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const params = useParams<{ badge?: string }>();
+  const badgeFromRoute = useMemo(() => {
+    const raw = params?.badge;
+    return raw ? String(raw) : "";
+  }, [params]);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const started = useRef<boolean>(false);
@@ -51,7 +57,14 @@ export function useMooAux(opts: UseMooAuxOpts = {}) {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const url = `/api/moo-aux${qs ? `?${qs}` : ""}`;
+      const badge =
+        badgeFromRoute ||
+        (typeof document !== "undefined"
+          ? (document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith("sessionId=")) || "")
+              .split("=", 2)[1] || ""
+          : "");
+      if (!badge) throw new Error("badge_required");
+      const url = `/api/${encodeURIComponent(badge)}/moo-aux${qs ? `?${qs}` : ""}`;
       const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -68,7 +81,7 @@ export function useMooAux(opts: UseMooAuxOpts = {}) {
       clearTimeout(timeout);
       setLoading(false);
     }
-  }, [qs]);
+  }, [badgeFromRoute, qs]);
 
   useEffect(() => {
     fetchRef.current = () => {

@@ -4,9 +4,9 @@
 // the same connection management.
 
 import type { PoolClient } from "pg";
-import { db, getPool, query, withClient } from "@/core/db/pool_server";
+import { db, getPool, query, withClient, withDbContext } from "@/core/db/pool_server";
 
-export { db, getPool, query, withClient };
+export { db, getPool, query, withClient, withDbContext };
 
 /** Alias kept for compatibility with older code that expected a Pool instance. */
 export const pool = getPool();

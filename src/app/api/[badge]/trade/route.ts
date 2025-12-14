@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import {
   commitMatrixGrid,
   getLatestByType,
@@ -99,7 +99,11 @@ function rowsToValues(
 }
 
 export async function PUT(req: Request, context: { params: { badge?: string } }) {
-  await requireUserSession();
+  const badge = context?.params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) {
+    return NextResponse.json(auth.body, { status: auth.status });
+  }
 
   let body: TradePayload;
   try {
@@ -109,8 +113,7 @@ export async function PUT(req: Request, context: { params: { badge?: string } })
   }
 
   try {
-    const appSessionId =
-      String(body.appSessionId ?? context?.params?.badge ?? "").trim() || "global";
+    const appSessionId = String(badge ?? "").trim();
     const tradeTs = extractTradeTs(body) ?? Date.now();
 
     const coins = dedupeCoins(await resolveCoinUniverse(body));

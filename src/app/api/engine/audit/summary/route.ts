@@ -1,14 +1,15 @@
 // src/app/api/audit/summary/route.ts
 import { NextResponse } from "next/server";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import { sql } from "@/core/db/db";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
-  const session = await requireUserSession();
-  const userId = session.userId;
+  const auth = await requireUserSessionApi("global");
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const userId = auth.ctx.userId;
 
   const [row] = await sql`
     SELECT owner_user_id, email,

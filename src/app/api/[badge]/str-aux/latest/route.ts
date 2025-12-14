@@ -12,6 +12,7 @@ import {
   parseStrAuxQuery,
   prependToken,
 } from "../request";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 
 export const dynamic = "force-dynamic";
 
@@ -64,19 +65,18 @@ function buildSession(symbol: string, coin: CoinOut, appSessionId: string) {
 }
 
 export async function GET(req: NextRequest, context: { params: { badge?: string } }) {
-  await requireUserSession();
   const url = req.nextUrl;
-  const badge = context?.params?.badge ?? null;
-  const headerSession = req.headers.get("x-app-session") || null;
-  const cookieSession = req.cookies.get("sessionId")?.value || null;
+  const badge = context?.params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
 
   const query = parseStrAuxQuery(url, {
-    defaultSessionId: "",
+    defaultSessionId: badge,
     badge,
-    headerSession,
-    cookieSession,
+    headerSession: null,
+    cookieSession: null,
   });
-  const appSessionId = (query.appSessionId || badge || "").trim();
+  const appSessionId = (badge || "").trim();
   if (!appSessionId) {
     return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });
   }

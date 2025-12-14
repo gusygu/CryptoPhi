@@ -11,6 +11,8 @@ import React, {
 import Matrix, { type MatrixCell } from "@/components/features/matrices/Matrix";
 import { withAlpha, COLOR_AMBER, NULL_SENSITIVITY } from "@/components/features/matrices/colors";
 import { useSettings } from "@/lib/settings/client";
+import { getBrowserBadge } from "@/lib/client/badge";
+import { useParams } from "next/navigation";
 
 const FALLBACK_COINS: string[] = ["BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "PEPE", "USDT"];
 const CARD_GRADIENT =
@@ -96,6 +98,11 @@ export default function MooAuxCard({
   const [sources, setSources] = useState<MooAuxSources | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const params = useParams<{ badge?: string }>();
+  const badgeFromRoute = useMemo(() => {
+    const raw = params?.badge;
+    return raw ? String(raw) : undefined;
+  }, [params]);
 
   const aliveRef = useRef(true);
   useEffect(() => () => {
@@ -118,7 +125,11 @@ export default function MooAuxCard({
       params.set("k", String(Math.max(1, defaultK)));
       if (normalizedCoins.length) params.set("coins", normalizedCoins.join(","));
 
-      const res = await fetch(`/api/moo-aux?${params.toString()}`, { cache: "no-store" });
+      const badge = (badgeFromRoute ?? getBrowserBadge() ?? "").trim();
+      if (!badge) throw new Error("badge_required");
+      const res = await fetch(`/api/${encodeURIComponent(badge)}/moo-aux?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (!res.ok) {
         throw new Error(`moo-aux responded with status ${res.status}`);
       }
@@ -163,7 +174,7 @@ export default function MooAuxCard({
       if (!aliveRef.current) return;
       setLoading(false);
     }
-  }, [defaultK, normalizedCoins]);
+  }, [badgeFromRoute, defaultK, normalizedCoins]);
 
   useEffect(() => {
     void refresh();

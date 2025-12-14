@@ -198,4 +198,29 @@ BEGIN
 END;
 $$;
 
+/* Resolve user_id from session_id bypassing RLS on session_map (badge-only flows). */
+CREATE OR REPLACE FUNCTION auth.resolve_user_id_from_session(
+  p_session_id text
+) RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = auth, public, user_space
+AS $$
+DECLARE
+  uid uuid;
+BEGIN
+  IF p_session_id IS NULL OR trim(p_session_id) = '' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT sm.user_id
+    INTO uid
+    FROM user_space.session_map sm
+   WHERE sm.session_id = p_session_id
+   LIMIT 1;
+
+  RETURN uid;
+END;
+$$;
+
 COMMIT;

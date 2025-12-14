@@ -2,54 +2,78 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { getCurrentSession } from "@/app/(server)/auth/session";
+import type { PoolClient } from "pg";
+import { getCurrentSession, resolveUserSessionForBadge, type UserSession } from "@/app/(server)/auth/session";
 import {
   fetchCoinUniverseBases,
   normalizeCoinList,
-  recordSettingsCookieSnapshot,
   syncCoinUniverseFromBases,
   upsertSessionCoinUniverse,
 } from "@/lib/settings/coin-universe";
 import { DEFAULT_SETTINGS, migrateSettings, type AppSettings } from "./schema";
 import { resolveCycleSeconds } from "@/core/settings/time";
-import { query, getPool } from "@/core/db/pool_server";
+import { query, withDbContext } from "@/core/db/pool_server";
 import { resolveRequestBadge } from "@/lib/server/badge";
 
 const COOKIE_KEY = "appSettings";
 const LEGACY_COOKIE_KEYS = ["cp_settings_v1"];
 const ONE_YEAR = 60 * 60 * 24 * 365;
+const MAX_COOKIE_BYTES = 2048;
 
-function safeParseJSON(value: string | undefined | null): any | null {
-  if (!value) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+function byteLength(str: string): number {
+  return Buffer.byteLength(str, "utf8");
 }
 
-export async function getAll(): Promise<AppSettings> {
+function safeSetCookie(
+  name: string,
+  value: string,
+  options: Parameters<Awaited<ReturnType<typeof cookies>>["set"]>[2],
+): boolean {
+  const size = byteLength(`${name}=${value}`);
+  if (size > MAX_COOKIE_BYTES) {
+    console.warn(`[settings] skip set cookie "${name}" size=${size}b (>2KB)`);
+    return false;
+  }
+  cookies().set(name, value, options);
+  return true;
+}
+
+export async function getAll(opts: {
+  client?: PoolClient | null;
+  sessionKey?: string | null;
+  session?: UserSession | null;
+} = {}): Promise<AppSettings> {
   // set request context so DB fetches are user-aware
-  const session = await getCurrentSession();
+  const session = opts.session ?? (await getCurrentSession());
   // badge/app_session_id: prefer request badge, fall back to global
-  const sessionKey = await resolveRequestBadge({ defaultToGlobal: false });
+  const sessionKey = opts.sessionKey ?? (await resolveRequestBadge({ defaultToGlobal: false }));
   if (!sessionKey) {
     throw new Error("missing_session");
   }
-  const cookieName = `${COOKIE_KEY}_${sessionKey}`;
-
   const jar = await cookies();
-  const raw = jar.get(cookieName)?.value;
-  const parsed = safeParseJSON(raw);
-  const settings = migrateSettings(parsed ?? DEFAULT_SETTINGS);
+  const cookieName = `${COOKIE_KEY}_${sessionKey}`;
+  const existing = jar.get(cookieName)?.value ?? null;
+  if (existing && byteLength(`${cookieName}=${existing}`) > MAX_COOKIE_BYTES) {
+    jar.set(cookieName, "", { path: "/", maxAge: 0, sameSite: "lax" });
+  }
+  for (const legacy of LEGACY_COOKIE_KEYS) {
+    const val = jar.get(legacy)?.value ?? null;
+    if (val && byteLength(`${legacy}=${val}`) > MAX_COOKIE_BYTES) {
+      jar.set(legacy, "", { path: "/", maxAge: 0, sameSite: "lax" });
+    }
+  }
+  const settings = migrateSettings(DEFAULT_SETTINGS);
   try {
-    const cycleSeconds = await resolveCycleSeconds(sessionKey);
+    const cycleSeconds = await resolveCycleSeconds(sessionKey, opts.client);
     settings.timing.autoRefreshMs = Math.max(1_000, cycleSeconds * 1_000);
   } catch {
     // keep migrated value on failure
   }
   const userCoinsFromCookie = normalizeCoinList(settings.coinUniverse);
-  const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
+  const dbCoins = await fetchCoinUniverseBases(
+    { onlyEnabled: true, context: session ? { userId: session.userId, sessionId: sessionKey, isAdmin: session.isAdmin } : undefined },
+    opts.client,
+  );
   // Prefer DB (user overrides resolved by view) then cookie, then defaults.
   settings.coinUniverse =
     dbCoins.length
@@ -60,33 +84,51 @@ export async function getAll(): Promise<AppSettings> {
   return settings;
 }
 
-export async function serializeSettingsCookie(nextValue: unknown): Promise<{
+export async function serializeSettingsCookie(
+  nextValue: unknown,
+  opts: { client?: PoolClient | null; session?: UserSession | null; sessionKey?: string | null } = {},
+): Promise<{
   settings: AppSettings;
   cookie: { name: string; value: string; options: Parameters<Awaited<ReturnType<typeof cookies>>["set"]>[2] };
+  persistedCoinUniverse?: string[];
 }> {
-  const current = await getAll();
-  const merged = migrateSettings({ ...current, ...(nextValue as any) });
-  const session = await getCurrentSession();
+  const client = opts.client ?? null;
+  const session = opts.session ?? (await getCurrentSession());
   const isAdmin = !!session?.isAdmin;
-  const sessionKey = await resolveRequestBadge({ defaultToGlobal: false });
+  const sessionKey = opts.sessionKey ?? (await resolveRequestBadge({ defaultToGlobal: false }));
   if (!sessionKey) {
     throw new Error("missing_session");
   }
+  const current = await getAll({ client, session, sessionKey });
+  const merged = migrateSettings({ ...current, ...(nextValue as any) });
 
-  const normalizedCoins = normalizeCoinList(merged.coinUniverse);
   // Sync universe: admins affect global, regular users write per-session overrides.
   if (isAdmin) {
-    await syncCoinUniverseFromBases(normalizedCoins);
+    const normalizedCoins = normalizeCoinList(merged.coinUniverse);
+    await syncCoinUniverseFromBases(normalizedCoins, client);
+    merged.coinUniverse = normalizedCoins;
   } else {
-    await upsertSessionCoinUniverse(sessionKey, normalizedCoins, { enable: true });
+    const { persistedSymbols } = await upsertSessionCoinUniverse(
+      sessionKey,
+      normalizeCoinList(merged.coinUniverse),
+      { enable: true, context: session ? { userId: session.userId, isAdmin: session.isAdmin } : undefined },
+      client,
+    );
+    // Use persisted list (read-after-write) to reflect DB state in response/cookie.
+    const persistedCoins = normalizeCoinList(
+      persistedSymbols.map((sym) =>
+        sym?.toUpperCase().endsWith("USDT") ? sym.toUpperCase().slice(0, -4) : sym.toUpperCase(),
+      ),
+    );
+    merged.coinUniverse = persistedCoins;
   }
 
   const normalized: AppSettings = {
     ...merged,
-    coinUniverse: normalizedCoins,
+    coinUniverse: normalizeCoinList(merged.coinUniverse),
   };
 
-  const value = JSON.stringify(normalized);
+  const value = JSON.stringify({ version: 1, badge: sessionKey });
   const cookieName = `${COOKIE_KEY}_${sessionKey || "global"}`;
   const cookie = {
     name: cookieName,
@@ -100,25 +142,16 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
     },
   };
 
-  await recordSettingsCookieSnapshot(value);
   // persist timing into DB (global/app-session scoped)
   const cycleSeconds = Math.max(1, Math.round(normalized.timing.autoRefreshMs / 1000));
+  const ctx = session
+    ? { sessionId: sessionKey, userId: session.userId, isAdmin }
+    : null;
   try {
-    if (sessionKey === "global") {
-      await query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]);
-    } else {
-      const c = await getPool().connect();
-      try {
-        await c.query("BEGIN");
-        await c.query(`select set_config('app.current_session_id', $1, true)`, [sessionKey]);
-        await c.query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]);
-        await c.query("COMMIT");
-      } catch (err) {
-        try { await c.query("ROLLBACK"); } catch {}
-        throw err;
-      } finally {
-        c.release();
-      }
+    if (client && ctx) {
+      await client.query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]);
+    } else if (ctx) {
+      await withDbContext(ctx, (c) => c.query(`select user_space.sp_upsert_poller_time($1)`, [cycleSeconds]));
     }
   } catch {
     // best-effort; ignore DB failures for cookie writes
@@ -126,45 +159,111 @@ export async function serializeSettingsCookie(nextValue: unknown): Promise<{
 
   // persist per-user params into user_space.params (RLS via current_user_id)
   try {
-    await query(
-      `select user_space.sp_upsert_params($1,$2,$3,$4,$5,$6,$7)`,
-      [
-        normalized.timing.autoRefreshMs,                    // primary_interval_ms
-        normalized.timing.secondaryEnabled,                 // secondary_enabled
-        normalized.timing.secondaryCycles,                  // secondary_cycles
-        normalized.timing.strCycles.m30,                    // str_cycles_m30
-        normalized.timing.strCycles.h1,                     // str_cycles_h1
-        normalized.timing.strCycles.h3,                     // str_cycles_h3
-        normalized.params.values.epsilon ?? null,           // epsilon override
-      ]
-    );
+    const params = [
+      normalized.timing.autoRefreshMs,                    // primary_interval_ms
+      normalized.timing.secondaryEnabled,                 // secondary_enabled
+      normalized.timing.secondaryCycles,                  // secondary_cycles
+      normalized.timing.strCycles.m30,                    // str_cycles_m30
+      normalized.timing.strCycles.h1,                     // str_cycles_h1
+      normalized.timing.strCycles.h3,                     // str_cycles_h3
+      normalized.params.values.epsilon ?? null,           // epsilon override
+    ];
+    if (client && ctx) {
+      await client.query(`select user_space.sp_upsert_params($1,$2,$3,$4,$5,$6,$7)`, params);
+    } else if (ctx) {
+      await withDbContext(ctx, (c) => c.query(`select user_space.sp_upsert_params($1,$2,$3,$4,$5,$6,$7)`, params));
+    }
   } catch {
     // best-effort; ignore DB failures for cookie writes
   }
 
-  return { settings: normalized, cookie };
+  return { settings: normalized, cookie, persistedCoinUniverse: normalized.coinUniverse };
 }
 
 export async function setAll(nextValue: unknown): Promise<AppSettings> {
-  const jar = await cookies();
   const { settings, cookie } = await serializeSettingsCookie(nextValue);
-  jar.set(cookie.name, cookie.value, cookie.options);
+  safeSetCookie(cookie.name, cookie.value, cookie.options);
 
-  const mutable = jar as unknown as { delete?: (name: string) => void };
-  if (mutable.delete) {
-    for (const legacy of LEGACY_COOKIE_KEYS) {
-      if (legacy !== cookie.name) mutable.delete(legacy);
-    }
-  }
   return settings;
 }
 
-export async function resolveCoinsFromSettings(): Promise<string[]> {
-  // ensure user context is attached so DB view returns per-user rows
-  await getCurrentSession();
-  const dbCoins = await fetchCoinUniverseBases({ onlyEnabled: true });
+export async function getEffectiveUniverseForUser(opts: {
+  userId: string;
+  sessionId: string;
+  isAdmin?: boolean;
+  client?: PoolClient | null;
+}): Promise<string[]> {
+  const ctx = { userId: opts.userId, sessionId: opts.sessionId, isAdmin: !!opts.isAdmin };
+  const bases = await fetchCoinUniverseBases(
+    { onlyEnabled: true, context: ctx },
+    opts.client ?? null,
+  );
+  const normalized = normalizeCoinList(bases);
+  if (!normalized.includes("USDT")) normalized.push("USDT");
+  return normalized;
+}
+
+export async function resolveCoinsFromSettings(
+  opts: { userId?: string | null; sessionId?: string | null; client?: PoolClient | null } = {},
+): Promise<string[]> {
+  let userId = opts.userId ?? null;
+  const sessionId = opts.sessionId ?? null;
+  let isAdmin = false;
+
+  if (sessionId && !userId) {
+    const resolved = await resolveUserSessionForBadge(sessionId);
+    if (resolved) {
+      userId = resolved.userId;
+      isAdmin = resolved.isAdmin;
+    } else {
+      return normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
+    }
+  }
+
+  if (userId && sessionId) {
+    try {
+      return await getEffectiveUniverseForUser({
+        userId,
+        sessionId,
+        isAdmin,
+        client: opts.client ?? null,
+      });
+    } catch {
+      /* fall back to defaults below */
+    }
+    return normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
+  }
+
+  if (sessionId && !userId) {
+    return normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
+  }
+
+  // ensure user context is attached so DB view returns per-user rows (only when badge not forced)
+  const session = await getCurrentSession();
+  const badge = await resolveRequestBadge({ defaultToGlobal: false });
+  const dbCoins =
+    session && badge
+      ? await fetchCoinUniverseBases(
+          { onlyEnabled: true, context: { userId: session.userId, sessionId: badge, isAdmin: session.isAdmin } },
+          opts.client ?? null,
+        )
+      : [];
   if (dbCoins.length) return dbCoins;
   return normalizeCoinList(DEFAULT_SETTINGS.coinUniverse);
+}
+
+export async function getEffectiveSettingsForBadge(badge: string): Promise<{
+  badge: string;
+  settings: AppSettings;
+  session: UserSession & { resolvedFromSessionMap?: boolean };
+}> {
+  const sessionId = (badge ?? "").trim();
+  const resolved = await resolveUserSessionForBadge(sessionId);
+  if (!resolved) {
+    throw new Error("unknown_badge");
+  }
+  const settings = await getAll({ sessionKey: sessionId, session: resolved });
+  return { badge: sessionId, settings, session: resolved };
 }
 
 /** Legacy alias kept for older imports. */

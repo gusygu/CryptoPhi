@@ -1,6 +1,6 @@
 // src/app/api/audit/report/route.ts
 import { NextResponse } from "next/server";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import { sql } from "@/core/db/db";
 import { sendAuditReportMail } from "@/core/mail/audit";
 
@@ -8,7 +8,9 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function POST(req: Request) {
-  const session = await requireUserSession();
+  const auth = await requireUserSessionApi("global");
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const session = auth.ctx;
   const body = await req.json().catch(() => ({}));
 
   const {

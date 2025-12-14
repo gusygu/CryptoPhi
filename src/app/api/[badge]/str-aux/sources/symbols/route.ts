@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
-import { query } from "@/core/db/db_server";
+import { NextResponse, type NextRequest } from "next/server";
+import { withDbContext } from "@/core/db/db_server";
 import { fetchCoinUniverseEntries } from "@/lib/settings/coin-universe";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeScope } from "@/lib/server/badge-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,65 +45,86 @@ function windowSeconds(label: string): number {
   return 60;
 }
 
-export async function GET() {
+export async function GET(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
   try {
-    // ensure app.current_user_id is set so user_space views resolve overrides
-    await requireUserSession();
-
-    const entries = await fetchCoinUniverseEntries({ onlyEnabled: true });
-    const symbols = entries.map((entry) => entry.symbol);
-    if (!symbols.length) {
-      return NextResponse.json(
-        { ok: false, error: "coin universe is empty" },
-        { status: 400 }
-      );
+    const params =
+      typeof (context as any)?.params?.then === "function"
+        ? await (context as { params: Promise<{ badge?: string }> }).params
+        : (context as { params: { badge?: string } }).params;
+    const badgeScope = resolveBadgeScope(req, { badge: params?.badge ?? null });
+    const badge = badgeScope.effectiveBadge;
+    const auth = await requireUserSessionApi(badge ?? "");
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
+    }
+    const session = auth.ctx;
+    if (!badge) {
+      return NextResponse.json({ ok: false, error: "missing_session_badge" }, { status: 401 });
     }
 
-    // 2) Params (singleton row) with cycles-per-window counts
-    const par = await query<TimingRow>(
-      `select str_cycles_m30, str_cycles_h1, str_cycles_h3 from user_space.v_params limit 1`
-    );
-    const P = par.rows[0] ?? { str_cycles_m30: 45, str_cycles_h1: 90, str_cycles_h3: 270 };
+    const response = await withDbContext(
+      { userId: session.userId, sessionId: badge, isAdmin: session.isAdmin, path: req.nextUrl.pathname, badgeParam: badgeScope.badgeParam },
+      async (client) => {
+        const entries = await fetchCoinUniverseEntries({ onlyEnabled: true }, client);
+        const symbols = entries.map((entry) => entry.symbol);
+        if (!symbols.length) {
+          return NextResponse.json(
+            { ok: false, error: "coin universe is empty" },
+            { status: 400 }
+          );
+        }
 
-    // 3) Canonical window labels present (we’ll try to pull the three primary ones if they exist)
-    const wins = await query<{ window_label: string }>(
-      `select window_label from settings.windows where window_label in ('30m','1h','3h') order by duration_ms`
-    );
-    const labels = wins.rows.length ? wins.rows.map(r => r.window_label) : ["30m", "1h", "3h"];
+        // 2) Params (singleton row) with cycles-per-window counts
+        const par = await client.query<TimingRow>(
+          `select str_cycles_m30, str_cycles_h1, str_cycles_h3 from user_space.v_params limit 1`
+        );
+        const P = par.rows[0] ?? { str_cycles_m30: 45, str_cycles_h1: 90, str_cycles_h3: 270 };
 
-    // 4) Compute timing:
-    //    - point = 5s (your model)
-    //    - cycle_sec = (30 min) / str_cycles_m30
-    const point_sec = 5;
-    const s30 = windowSeconds("30m");
-    const cycles_m30 = P.str_cycles_m30 ?? 45; // matches your defaults (30m / 40s = 45)
-    const cycle_sec = Math.max(1, Math.floor(s30 / Math.max(1, cycles_m30))); // e.g., 1800/45 = 40
+        // 3) Canonical window labels present (we'll try to pull the three primary ones if they exist)
+        const wins = await client.query<{ window_label: string }>(
+          `select window_label from settings.windows where window_label in ('30m','1h','3h') order by duration_ms`
+        );
+        const labels = wins.rows.length ? wins.rows.map(r => r.window_label) : ["30m", "1h", "3h"];
 
-    const windows = labels.map(label => {
-      const secs = windowSeconds(label);
-      const cycles_per_window =
-        label === "30m" ? (P.str_cycles_m30 ?? 45) :
-        label === "1h"  ? (P.str_cycles_h1  ?? 90) :
-        label === "3h"  ? (P.str_cycles_h3  ?? 270) :
-        Math.max(1, Math.round(secs / cycle_sec));
+        // 4) Compute timing:
+        //    - point = 5s (your model)
+        //    - cycle_sec = (30 min) / str_cycles_m30
+        const point_sec = 5;
+        const s30 = windowSeconds("30m");
+        const cycles_m30 = P.str_cycles_m30 ?? 45; // matches your defaults (30m / 40s = 45)
+        const cycle_sec = Math.max(1, Math.floor(s30 / Math.max(1, cycles_m30))); // e.g., 1800/45 = 40
 
-      return {
-        label,
-        seconds: secs,
-        cycles_per_window,
-      };
-    });
+        const windows = labels.map(label => {
+          const secs = windowSeconds(label);
+          const cycles_per_window =
+            label === "30m" ? (P.str_cycles_m30 ?? 45) :
+            label === "1h"  ? (P.str_cycles_h1  ?? 90) :
+            label === "3h"  ? (P.str_cycles_h3  ?? 270) :
+            Math.max(1, Math.round(secs / cycle_sec));
 
-    return NextResponse.json({
-      ok: true,
-      ts: Date.now(),
-      symbols,
-      timing: {
-        point_sec,          // 5
-        cycle_sec,          // inferred (usually 40)
-        windows,            // [{label:'30m', seconds:1800, cycles_per_window:45}, ...]
+          return {
+            label,
+            seconds: secs,
+            cycles_per_window,
+          };
+        });
+
+        return NextResponse.json({
+          ok: true,
+          ts: Date.now(),
+          symbols,
+          timing: {
+            point_sec,          // 5
+            cycle_sec,          // inferred (usually 40)
+            windows,            // [{label:'30m', seconds:1800, cycles_per_window:45}, ...]
+          },
+        }, { headers: { "Cache-Control": "no-store" } });
       },
-    }, { headers: { "Cache-Control": "no-store" } });
+    );
+    return response;
 
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });

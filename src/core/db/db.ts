@@ -1,9 +1,9 @@
 // src/core/db/db.ts
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
-import { db, getPool, query, withClient } from "./pool_server";
+import { db, getPool, query, withClient, withDbContext } from "./pool_server";
 import { resolveRequestBadge } from "@/lib/server/badge";
 
-export { db, getPool, query, withClient } from "./pool_server";
+export { db, getPool, query, withClient, withDbContext } from "./pool_server";
 export { sql } from "./session";
 export type { SqlTag } from "./session";
 
@@ -451,10 +451,12 @@ export async function getPrevValue(
   base: string,
   quote: string,
   beforeTs: number,
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null,
 ) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = client ? client.query.bind(client) : db.query.bind(db);
+  const { rows } = await executor(
     `SELECT value FROM ${TABLE}
      WHERE matrix_type=$1 AND base=$2 AND quote=$3 AND ts_ms < $4
        AND coalesce(meta->>'app_session_id','global') = $5
@@ -464,9 +466,10 @@ export async function getPrevValue(
   return rows.length ? Number(rows[0].value) : null;
 }
 
-export async function getLatestTsForType(matrix_type: string, appSessionId?: string | null) {
+export async function getLatestTsForType(matrix_type: string, appSessionId?: string | null, client?: PoolClient | null) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = client ? client.query.bind(client) : db.query.bind(db);
+  const { rows } = await executor(
     `SELECT MAX(ts_ms) AS ts_ms FROM ${TABLE}
       WHERE matrix_type=$1
         AND coalesce(meta->>'app_session_id','global') = $2`,
@@ -479,10 +482,12 @@ export async function getLatestTsForType(matrix_type: string, appSessionId?: str
 export async function getNearestTsAtOrBefore(
   matrix_type: string,
   ts_ms: number,
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null,
 ) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = client ? client.query.bind(client) : db.query.bind(db);
+  const { rows } = await executor(
     `SELECT ts_ms FROM ${TABLE}
      WHERE matrix_type=$1 AND ts_ms <= $2
        AND coalesce(meta->>'app_session_id','global') = $3
@@ -497,10 +502,12 @@ export async function getSnapshotByType(
   matrix_type: string,
   ts_ms: number,
   coins: string[],
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null,
 ) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = client ? client.query.bind(client) : db.query.bind(db);
+  const { rows } = await executor(
     `SELECT base, quote, value FROM ${TABLE}
      WHERE matrix_type=$1 AND ts_ms=$2 AND base = ANY($3) AND quote = ANY($3)
        AND coalesce(meta->>'app_session_id','global') = $4`,
@@ -513,10 +520,12 @@ export async function getPrevSnapshotByType(
   matrix_type: string,
   beforeTs: number,
   coins: string[],
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null,
 ) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = client ? client.query.bind(client) : db.query.bind(db);
+  const { rows } = await executor(
     `SELECT DISTINCT ON (base, quote) base, quote, value
         FROM ${TABLE}
        WHERE matrix_type=$1
@@ -532,7 +541,8 @@ export async function getPrevSnapshotByType(
 
 export async function countRowsAt(matrix_type: string, ts_ms: number, appSessionId?: string | null) {
   const sessionKey = await normalizeSessionId(appSessionId);
-  const { rows } = await db.query(
+  const executor = db.query.bind(db);
+  const { rows } = await executor(
     `SELECT count(*)::int AS n FROM ${TABLE}
       WHERE matrix_type=$1 AND ts_ms=$2
         AND coalesce(meta->>'app_session_id','global') = $3`,

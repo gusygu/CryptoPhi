@@ -1,8 +1,7 @@
 // app/api/matrices/latest/route.ts
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
-import type { NextApiRequest, NextApiResponse } from "next";
 import {
   getPrevSnapshotByType,
   getPrevValue,
@@ -25,9 +24,9 @@ import type {
   isPairFrozenFromSet,
   getFrozenSetFromMatricesLatest,
 } from "@/core/features/matrices/matrices";
-import { query } from "@/core/db/pool_server";
-
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
+import { unstable_noStore as noStore } from "next/cache";
+import { getPool, type PoolClient } from "@/core/db/pool_server";
 // keep these aliases so TS treats the imports as “used” (still type-only)
 type _FrozenPairKey = FrozenPairKey;
 type _FrozenSetBuilder = typeof buildFrozenSetFromFlags;
@@ -84,28 +83,25 @@ async function coinsFromCookiesOrHeaders(): Promise<string[] | null> {
   return null;
 }
 
-async function resolveCoinsUniverse(preferred: string[] | null): Promise<string[]> {
-  if (preferred && preferred.length) return coinsAddUSDTFirst(preferred);
+async function resolveCoinsUniverse(
+  preferred: string[] | null,
+  ctx: { userId: string; badge: string },
+  allowedCoins: string[],
+): Promise<string[]> {
+  const allowedUniverse = coinsAddUSDTFirst(allowedCoins);
 
-  const fromSettings = await resolveCoinsFromSettings();
-  if (fromSettings.length) return coinsAddUSDTFirst(fromSettings);
+  if (preferred && preferred.length) {
+    const preferredSet = new Set(normalizeCoins(preferred));
+    const filtered = allowedUniverse.filter((coin) => preferredSet.has(coin));
+    if (filtered.length) return coinsAddUSDTFirst(filtered);
+  }
+
+  if (allowedUniverse.length) return allowedUniverse;
 
   const legacy = await coinsFromCookiesOrHeaders();
   if (legacy?.length) return coinsAddUSDTFirst(legacy);
 
   return ["USDT"];
-}
-
-async function pickSessionId(reqUrl: string, badgeHint?: string | null): Promise<string | null> {
-  const url = new URL(reqUrl);
-  const fromQuery = url.searchParams.get("sessionId");
-  const hdrs = await headers();
-  const fromHeaders = hdrs.get("x-app-session");
-  const ckBag = await cookies();
-  const ck = ckBag.get("sessionId")?.value;
-  const fromBadge = (badgeHint || "").trim();
-  const first = (fromQuery || fromHeaders || ck || fromBadge || "").trim();
-  return first || null;
 }
 
 function ensureWindow(win: string | null | undefined): MatrixWindow {
@@ -156,6 +152,9 @@ type MatricesLatestErrorPayload = {
 export type MatricesLatestPayload =
   | MatricesLatestSuccessPayload
   | MatricesLatestErrorPayload;
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -253,7 +252,7 @@ async function parseQuery(req: Request, badgeHint?: string | null): Promise<{
   const qCoins = parseCoinsCSV(url.searchParams.get("coins"));
   const quote = (url.searchParams.get("quote") || "USDT").toUpperCase();
   const window = ensureWindow(url.searchParams.get("window"));
-  const appSessionId = (await pickSessionId(req.url, badgeHint)) || null;
+  const appSessionId = (badgeHint || "").trim() || null;
   return { coins: qCoins, quote, window, appSessionId };
 }
 
@@ -262,6 +261,7 @@ type BuildMatricesLatestArgs = {
   quote?: string;
   window?: string | null;
   appSessionId?: string | null;
+  allowedCoins?: string[];
 };
 
 const pickValues = (coins: readonly string[], vals: MatValues): MatValues => {
@@ -282,11 +282,11 @@ const pickValues = (coins: readonly string[], vals: MatValues): MatValues => {
 };
 
 export async function buildMatricesLatestPayload(
-  params: BuildMatricesLatestArgs = {}
+  params: BuildMatricesLatestArgs & { userId: string; badge: string; resolvedFromSessionMap?: boolean; client: PoolClient }
 ): Promise<MatricesLatestPayload> {
   const quote = (params.quote ?? "USDT").toUpperCase();
   const window = ensureWindow(params.window ?? null);
-  const appSessionId = params.appSessionId ?? null;
+  const appSessionId = params.appSessionId ?? params.badge ?? null;
 
   try {
     const queryCoinsNormalized = Array.isArray(params.coins)
@@ -297,10 +297,9 @@ export async function buildMatricesLatestPayload(
       queryCoinsNormalized && queryCoinsNormalized.length
         ? queryCoinsNormalized
         : null;
-    const resolvedCoins = await resolveCoinsUniverse(preferCoins);
-    const viewCoins =
-      preferCoins == null ? await fetchPairUniverseCoins() : [];
-    const requestedCoins = normalizeCoins([...resolvedCoins, ...viewCoins]);
+    const allowedCoins = Array.isArray(params.allowedCoins) ? normalizeCoins(params.allowedCoins) : [];
+    const resolvedCoins = await resolveCoinsUniverse(preferCoins, { userId: params.userId, badge: params.badge }, allowedCoins);
+    const requestedCoins = normalizeCoins(resolvedCoins);
 
     if (!requestedCoins.length) {
       throw new Error("No coins resolved for matrices universe");
@@ -329,8 +328,8 @@ export async function buildMatricesLatestPayload(
     const nowTs = live.matrices.benchmark.ts;
 
     const [prevBenchmarkRows, prevIdPctRows] = await Promise.all([
-      getPrevSnapshotByType("benchmark", nowTs, coins, appSessionId),
-      getPrevSnapshotByType("id_pct", nowTs, coins, appSessionId),
+      getPrevSnapshotByType("benchmark", nowTs, coins, appSessionId, params.client),
+      getPrevSnapshotByType("id_pct", nowTs, coins, appSessionId, params.client),
     ]);
 
     const prevBenchmarkMap = new Map<string, number>();
@@ -366,7 +365,8 @@ export async function buildMatricesLatestPayload(
           base.toUpperCase(),
           quoteSym.toUpperCase(),
           beforeTs,
-          appSessionId
+          appSessionId,
+          params.client
         );
       },
 
@@ -376,18 +376,19 @@ export async function buildMatricesLatestPayload(
           window,
           appSessionId,
           openingTs: undefined,
+          client: params.client,
         });
         lastOpeningTs = ref.ts ?? nowTsParam;
         return { ts: ref.ts ?? nowTsParam, grid: ref.grid };
       },
 
       fetchSnapshotGrid: async (coinsUniverse, nowTsParam) => {
-        const snap = await fetchSnapshotBenchmarkGrid(coinsUniverse);
+        const snap = await fetchSnapshotBenchmarkGrid(coinsUniverse, appSessionId, params.client);
         lastSnapshotTs = snap.ts ?? null;
         return { ts: snap.ts ?? nowTsParam, grid: snap.grid };
       },
       fetchTradeGrid: async (coinsUniverse, nowTsParam) => {
-        const trade = await fetchTradeBenchmarkGrid(coinsUniverse, appSessionId);
+        const trade = await fetchTradeBenchmarkGrid(coinsUniverse, appSessionId, params.client);
         lastTradeTs = trade.ts ?? null;
         return { ts: trade.ts ?? nowTsParam, grid: trade.grid };
       },
@@ -466,21 +467,100 @@ export async function buildMatricesLatestPayload(
 }
 
 export async function GET(
-  req: Request,
-  context: { params: { badge: string } } | { params: Promise<{ badge: string }> }
+  req: NextRequest,
+  context: { params: { badge: string } },
 ) {
-  const session = await requireUserSession();
-  const params = typeof (context as any)?.params?.then === "function"
-    ? await (context as { params: Promise<{ badge: string }> }).params
-    : (context as { params: { badge: string } }).params;
-  const badge = params?.badge ?? null;
-  const q = await parseQuery(req, badge);
-  const appSessionId = q.appSessionId || badge;
-  if (!appSessionId) {
-    return NextResponse.json({ ok: false, error: "missing_session" }, { status: 401 });
+  noStore();
+  let client: PoolClient | null = null;
+  let badge: string | null = null;
+  let userId: string | null = null;
+  let resolvedFromSessionMap = false;
+  try {
+    const resolved = await resolveBadgeRequestContext(req, context?.params);
+    if (!resolved.ok) {
+      return NextResponse.json(resolved.body, { status: resolved.status });
+    }
+    badge = resolved.badge;
+    userId = resolved.session.userId;
+    resolvedFromSessionMap = (resolved.session as any)?.resolvedFromSessionMap ?? false;
+    if (!badge || !userId) {
+      throw new Error("badge_or_user_missing");
+    }
+
+    client = await getPool().connect();
+    await client.query("BEGIN");
+    await client.query("select auth.set_request_context($1,$2,$3)", [userId, resolved.session.isAdmin ?? false, badge]);
+
+    const allowedCoins = normalizeCoins(
+      await resolveCoinsFromSettings({ userId, sessionId: badge, client }),
+    );
+
+    const q = await parseQuery(req, badge);
+    const appSessionId = badge;
+    q.appSessionId = appSessionId;
+
+    const payload = await buildMatricesLatestPayload({
+      ...q,
+      userId,
+      badge,
+      allowedCoins,
+      resolvedFromSessionMap,
+      client,
+    });
+
+    await client.query("COMMIT");
+
+    if (process.env.NODE_ENV !== "production") {
+      console.info(
+        JSON.stringify({
+          tag: "matrices_latest_universe",
+          userId,
+          badge,
+          resolvedFromSessionMap,
+          coins: payload.ok ? payload.meta.universe : [],
+          allowedCoins,
+        }),
+      );
+    }
+    const status = payload.ok ? 200 : 500;
+    const resHeaders = new Headers();
+    if (userId) resHeaders.set("x-user-uuid", userId);
+    if (badge) resHeaders.set("x-session-id", badge);
+    if (payload.ok) {
+      resHeaders.set("x-universe", payload.meta.universe.join(","));
+    }
+    const responseBody = {
+      ...payload,
+      resolved: { badge, userId, sessionId: badge },
+      coinsUsed: payload.ok ? payload.meta.universe : [],
+      resolvedFromSessionMap,
+    };
+    return NextResponse.json(responseBody, { status, headers: resHeaders });
+  } catch (err: any) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+    }
+    const resHeaders = new Headers();
+    if (userId) resHeaders.set("x-user-uuid", userId);
+    if (badge) resHeaders.set("x-session-id", badge);
+    console.error("[matrices/latest] internal error:", err);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "internal_error",
+        route: "matrices/latest",
+        badge,
+        userId,
+        message: String(err?.message ?? err),
+        resolved: { badge, userId, sessionId: badge },
+        coinsUsed: [],
+        resolvedFromSessionMap,
+      },
+      { status: 500, headers: resHeaders },
+    );
+  } finally {
+    client?.release?.();
   }
-  q.appSessionId = appSessionId;
-  const payload = await buildMatricesLatestPayload(q);
-  const status = payload.ok ? 200 : 500;
-  return NextResponse.json(payload, { status });
 }

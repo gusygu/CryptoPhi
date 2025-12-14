@@ -1,12 +1,22 @@
 import { NextResponse } from "next/server";
 import { db } from "@/core/db/db";
 import { listRuntimeSessions } from "@/core/features/cin-aux/runtimeQueries";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 
 // GET: list sessions
-export async function GET() {
+export async function GET(
+  _req: Request,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const params =
+    typeof (context as any)?.params?.then === "function"
+      ? await (context as { params: Promise<{ badge?: string }> }).params
+      : (context as { params: { badge?: string } }).params;
+  const badge = params?.badge ?? "";
   try {
-    const session = await requireUserSession();
+    const auth = await requireUserSessionApi(badge);
+    if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+    const session = auth.ctx;
     const sessions = await listRuntimeSessions(session.userId);
     return NextResponse.json(sessions);
   } catch (err: any) {
@@ -17,8 +27,18 @@ export async function GET() {
 }
 
 // POST: create session
-export async function POST() {
-  const session = await requireUserSession();
+export async function POST(
+  _req: Request,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const params =
+    typeof (context as any)?.params?.then === "function"
+      ? await (context as { params: Promise<{ badge?: string }> }).params
+      : (context as { params: { badge?: string } }).params;
+  const badge = params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const session = auth.ctx;
   try {
     const { rows } = await db.query(
       `

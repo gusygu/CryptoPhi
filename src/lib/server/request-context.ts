@@ -4,6 +4,9 @@ export type ServerRequestContext = {
   userId: string | null;
   isAdmin: boolean;
   sessionId: string | null;
+  path?: string | null;
+  badgeParam?: string | null;
+  resolvedFromSessionMap?: boolean;
 };
 
 const storage = new AsyncLocalStorage<ServerRequestContext | null>();

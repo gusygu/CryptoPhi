@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { resolveBadgeScope } from "@/lib/server/badge-scope";
 
 // Engine/global routes (shared across users).
 const ENGINE_ROOTS = new Set([
@@ -54,6 +55,7 @@ const PAGE_FEATURE_ROOTS = new Set([
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const segments = pathname.split("/").filter(Boolean);
+  const scope = resolveBadgeScope(req, { badge: segments[0] ?? null });
 
   // ---- Non-API: redirect to badge-scoped path (except auth/docs/info/static)
   if (!pathname.startsWith("/api/")) {
@@ -66,9 +68,7 @@ export function middleware(req: NextRequest) {
       first === "assets";
 
     if (!isStatic && !PAGE_GLOBAL_ROOTS.has(first)) {
-      const fromCookie =
-        req.cookies.get("sessionId")?.value || "";
-      const badge = (fromCookie || "global").trim() || "global";
+      const badge = scope.effectiveBadge || scope.badgeCookie || "global";
 
       // Already badge-scoped? If first segment matches badge, let it pass.
       if (first !== badge) {
@@ -93,14 +93,6 @@ export function middleware(req: NextRequest) {
 
   if (!first || rest.length === 0) return NextResponse.next();
 
-  const pickBadge = (): string => {
-    const qp = req.nextUrl.searchParams.get("sessionId");
-    const fromHeader = req.headers.get("x-app-session");
-    const fromCookie = req.cookies.get("sessionId")?.value;
-    const badge = (qp || fromHeader || fromCookie || "").trim();
-    return badge || "global";
-  };
-
   // /api/engine/<root>/... => global/system scope
   if (first === "engine" && rest.length) {
     const [root] = rest;
@@ -121,7 +113,7 @@ export function middleware(req: NextRequest) {
 
   // /api/{user}/<user-root>/... => user-scoped; carry user badge as app session id
   if (USER_ROOTS.has(rest[0] ?? "")) {
-    const userBadge = first.trim() || pickBadge();
+    const userBadge = (scope.effectiveBadge || first || scope.badgeCookie || "global").trim();
     const headers = new Headers(req.headers);
     headers.set("x-app-session", userBadge);
     return NextResponse.next({ request: { headers } });
@@ -129,7 +121,7 @@ export function middleware(req: NextRequest) {
 
   // Legacy user: /api/<user-root>/... => rewrite to /api/{badge}/<user-root>/...
   if (USER_ROOTS.has(first)) {
-    const userBadge = pickBadge();
+    const userBadge = (scope.effectiveBadge || scope.badgeCookie || "global").trim();
     const url = req.nextUrl.clone();
     url.pathname = ["/api", userBadge, first, ...rest].join("/");
     const headers = new Headers(req.headers);

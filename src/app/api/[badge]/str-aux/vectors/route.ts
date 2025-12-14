@@ -15,7 +15,7 @@
 // ============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import {
   appendUserCycleLog,
   insertStrSamplingLog,
@@ -422,8 +422,18 @@ function pickWindowKey(value?: string | null): SamplingWindowKey {
 // =============================================================================
 // GET - stateless compute with sampling + inline CSV
 // =============================================================================
-export async function GET(req: NextRequest) {
-  const session = await requireUserSession();
+export async function GET(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const params =
+    typeof (context as any)?.params?.then === "function"
+      ? await (context as { params: Promise<{ badge?: string }> }).params
+      : (context as { params: { badge?: string } }).params;
+  const badge = params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const session = auth.ctx;
   try {
     const url = new URL(req.url);
     const symbols = await resolveSymbols(url);
@@ -566,8 +576,18 @@ export async function GET(req: NextRequest) {
 //   "cycles": 4, "force": true
 // }
 // =============================================================================
-export async function POST(req: NextRequest) {
-  const session = await requireUserSession();
+export async function POST(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const params =
+    typeof (context as any)?.params?.then === "function"
+      ? await (context as { params: Promise<{ badge?: string }> }).params
+      : (context as { params: { badge?: string } }).params;
+  const badge = params?.badge ?? "";
+  const auth = await requireUserSessionApi(badge);
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  const session = auth.ctx;
   try {
     const b = await req.json().catch(() => ({} as any));
     ensureSamplingRuntime();

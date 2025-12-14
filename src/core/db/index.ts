@@ -13,4 +13,6 @@ export {
   appendTransferLedger,
   listTransferLegs,
   TABLES,
+  withDbContext,
+  type DbContext,
 } from "./pool_server";

@@ -24,15 +24,8 @@ function readSessionId(): string | null {
 }
 
 function readBadge(): string {
-  if (typeof window === "undefined") return "global";
   const sid = readSessionId();
-  if (sid) return sid;
-
-  // As a fallback, if the first path segment looks like a badge (not a known page root)
-  const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
-  const reserved = new Set(["api", "settings", "snapshot", "matrices", "dynamics", "auth", "docs", "info", "admin", "audit", "mgmt", "cin-aux", "str-aux", "trade"]);
-  if (seg && !reserved.has(seg)) return seg;
-  return "global";
+  return sid || "global";
 }
 
 function sessionHeaders(init?: HeadersInit): Headers {

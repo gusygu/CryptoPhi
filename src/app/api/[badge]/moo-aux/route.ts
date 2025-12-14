@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { db } from "@/core/db/db";
-import { getCurrentSession } from "@/app/(server)/auth/session";
+import { getPool, type PoolClient } from "@/core/db/pool_server";
 import {
   buildMeaAux,
   type BalancesMap,
@@ -16,6 +15,8 @@ import { computeSampledMetrics } from "@/core/features/str-aux/calc/panel";
 import type { StatsOptions } from "@/core/features/str-aux/calc/stats";
 import type { SamplingWindowKey } from "@/core/features/str-aux/sampling";
 import { buildMatricesLatestPayload } from "@/app/api/[badge]/matrices/latest/route";
+import { unstable_noStore as noStore } from "next/cache";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 
 // NEW: mood imports (added in lib/mood.ts per our plan)
 import {
@@ -31,7 +32,6 @@ export const revalidate = 0;
 
 const CACHE_HEADERS = { "Cache-Control": "no-store" };
 const DEFAULT_COINS = ["USDT", "BTC", "ETH", "BNB", "SOL"];
-const DEFAULT_APP_SESSION = process.env.NEXT_PUBLIC_APP_SESSION_ID ?? "moo-aux";
 const STR_MOOD_WINDOW: SamplingWindowKey =
   (process.env.MOO_AUX_STR_WINDOW as SamplingWindowKey) ?? "30m";
 const STR_MOOD_BINS = Number.isFinite(Number(process.env.MOO_AUX_STR_BINS))
@@ -67,50 +67,78 @@ type MoodRawDescriptor = {
 };
 
 export async function GET(req: NextRequest, context: { params: { badge?: string } }) {
+  let client: PoolClient | null = null;
+  let ownerUserId: string | null = null;
+  let badge: string | null = null;
+  let resolvedFromSessionMap = false;
   try {
+    noStore();
     const url = new URL(req.url);
-    const badge = context?.params?.badge ?? null;
-    const session = await getCurrentSession();
-    const ownerUserId = session?.userId ?? null;
-    const appSessionId = (url.searchParams.get("sessionId") ?? badge ?? DEFAULT_APP_SESSION).slice(0, 64);
+    const resolved = await resolveBadgeRequestContext(req, context?.params);
+    if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+    badge = resolved.badge;
+    ownerUserId = resolved.session.userId;
+    resolvedFromSessionMap = (resolved.session as any)?.resolvedFromSessionMap ?? false;
+    if (!badge || !ownerUserId) {
+      throw new Error("badge_or_user_missing");
+    }
 
-    // -------- timing
+    client = await getPool().connect();
+    await client.query("BEGIN");
+    await client.query("select auth.set_request_context($1,$2,$3)", [ownerUserId, resolved.session.isAdmin ?? false, badge]);
+    const allowedCoins = dedupeCoins(await resolveCoinsFromSettings({ userId: ownerUserId, sessionId: badge, client }));
+    const appSessionId = badge.slice(0, 64);
+
     const tsParam = Number(url.searchParams.get("ts") ?? url.searchParams.get("timestamp"));
     const tsMs = Number.isFinite(tsParam) && tsParam > 0 ? tsParam : Date.now();
 
-    // -------- coins universe
-    const { coins: initialCoins, source: coinsSource } = await resolveCoins(url);
+    const { coins: initialCoins, source: coinsSource } = await resolveCoins(url, ownerUserId, badge, allowedCoins, client);
+    if (process.env.NODE_ENV !== "production") {
+      console.info(
+        JSON.stringify({
+          tag: "moo_universe",
+          userId: ownerUserId,
+          badge,
+          resolvedFromSessionMap,
+          source: coinsSource,
+          coins: initialCoins,
+        }),
+      );
+    }
 
-    // -------- id_pct grid (DB-backed)
-    const { grid: idPctGridRaw, source: idPctSource } = await readIdPctGrid(initialCoins, tsMs, appSessionId);
+    const { grid: idPctGridRaw, source: idPctSource } = await readIdPctGrid(
+      initialCoins,
+      tsMs,
+      appSessionId,
+      ownerUserId,
+      badge,
+      allowedCoins,
+      client,
+    );
     const dedupedCoins = dedupeCoins([...initialCoins, ...coinsFromGrid(idPctGridRaw)]);
     if (!dedupedCoins.length) {
+      await client.query("COMMIT");
       return NextResponse.json(
-        { ok: true, coins: [], k: 0, grid: {} },
+        { ok: true, coins: [], k: 0, grid: {}, resolved: { badge, userId: ownerUserId }, coinsUsed: [] },
         { headers: CACHE_HEADERS },
       );
     }
     let coins = dedupedCoins;
     if (!coins.includes("USDT")) coins = ["USDT", ...coins];
 
-    // -------- availability filter
     const availability: PairAvailabilitySnapshot = await resolvePairAvailability(coins);
     const allowedSymbols = availability.set;
     const moodSymbols = deriveMoodSymbols(coins, allowedSymbols);
 
-    // -------- normalize id_pct grid + balances
     const idPctGrid = ensureIdPctGrid(idPctGridRaw, coins);
-    const { balances, source: balanceSource } = await readBalancesFromLedger(coins, ownerUserId);
+    const { balances, source: balanceSource } = await readBalancesFromLedger(coins, ownerUserId, client);
 
-    // -------- divisor (k)
     const kParam = Number(url.searchParams.get("k"));
     const divisor = Number.isFinite(kParam) && kParam > 0
       ? Math.floor(kParam)
       : Math.max(1, coins.length - 1);
 
-    // ======== NEW: mood normalization & coefficient (anchored) ========
-    // Query overrides (optional) for testing:
-    const q_gfmDeltaPct = toNum(url.searchParams.get("gfmDeltaPct")); // e.g. 0.01 for +1%
+    const q_gfmDeltaPct = toNum(url.searchParams.get("gfmDeltaPct"));
     const q_tendencyRaw = toNum(url.searchParams.get("tendencyRaw"));
     const q_swapRaw     = toNum(url.searchParams.get("swapRaw"));
 
@@ -134,7 +162,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
 
     let derivedSignals = haveRaw
       ? null
-      : await computeMoodSignalsFromStrAux(moodSymbols, STR_MOOD_WINDOW).catch(() => null);
+      : await computeMoodSignalsFromStrAux(moodSymbols, STR_MOOD_WINDOW, client).catch(() => null);
     if (!derivedSignals) {
       derivedSignals = { gfmDeltaPct: 0, tendencyRaw: 0, swapRaw: 0, symbols: [], perSymbol: [] };
     }
@@ -164,9 +192,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
     const { coeff: moodCoeff, buckets } = computeMoodCoeffV1(moodInputs);
     const moodUUID = moodUUIDFromBuckets(buckets);
     const perSymbolMood = buildPerSymbolMood(moodRawDescriptor.perSymbol, refs);
-    // ================================================================
 
-    // -------- build MEA weights (legacy function untouched)
     const grid = buildMeaAux({
       coins,
       idPct: idPctGrid,
@@ -176,26 +202,27 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
       moodCoeff,
     });
 
-    // Persist observation (best-effort)
-    const observationPayload = {
+    saveMoodObservation(appSessionId, tsMs, moodUUID, moodCoeff, {
       source: moodRawDescriptor.source,
       symbols: moodRawDescriptor.symbols,
       signals: moodRawDescriptor.signals,
       inputs: moodInputs,
       refs,
       perSymbol: perSymbolMood,
-    };
-    saveMoodObservation(appSessionId, tsMs, moodUUID, moodCoeff, observationPayload).catch((err) => {
+    }, client).catch((err) => {
       console.warn("[moo-aux] mood observation skipped:", err);
     });
 
-    // -------- mask unavailable symbols/pairs
     if (allowedSymbols.size) {
       maskUnavailableMatrix(grid, allowedSymbols);
       maskUnavailableMatrix(idPctGrid, allowedSymbols);
     }
 
-    // -------- response
+    const headers = new Headers(CACHE_HEADERS);
+    headers.set("x-user-uuid", ownerUserId ?? "");
+    headers.set("x-session-id", badge);
+    headers.set("x-universe", coins.join(","));
+    await client.query("COMMIT");
     return NextResponse.json(
       {
         ok: true,
@@ -223,15 +250,35 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
           symbols: availability.symbols,
           pairs: availability.pairs,
         },
+        resolved: { badge, userId: ownerUserId, sessionId: badge },
+        coinsUsed: coins,
+        resolvedFromSessionMap,
       },
-      { headers: CACHE_HEADERS },
+      { headers },
     );
   } catch (err: unknown) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+    }
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { ok: false, error: message },
+      {
+        ok: false,
+        error: "internal_error",
+        route: "moo-aux",
+        badge,
+        userId: ownerUserId,
+        message,
+        resolved: { badge, userId: ownerUserId, sessionId: badge },
+        coinsUsed: [],
+        resolvedFromSessionMap,
+      },
       { status: 500, headers: CACHE_HEADERS },
     );
+  } finally {
+    client?.release?.();
   }
 }
 
@@ -329,7 +376,8 @@ function buildPerSymbolMood(details: SymbolMoodSignals[], refs: MoodReferentials
 
 async function computeMoodSignalsFromStrAux(
   symbols: string[],
-  window: SamplingWindowKey
+  window: SamplingWindowKey,
+  client: PoolClient,
 ): Promise<MoodSignals> {
   const unique = Array.from(new Set(symbols.map((s) => String(s ?? "").toUpperCase()).filter(Boolean)));
   if (!unique.length) {
@@ -355,7 +403,7 @@ async function computeMoodSignalsFromStrAux(
     }
   }
   const fallbackMap = fallbackTargets.length
-    ? await fetchWindowVectorFallbacks(fallbackTargets, window)
+    ? await fetchWindowVectorFallbacks(fallbackTargets, window, client)
     : {};
   let gfmNum = 0;
   let gfmDen = 0;
@@ -471,41 +519,55 @@ function ensureIdPctGrid(grid: IdPctGrid, coins: string[]): IdPctGrid {
   return grid;
 }
 
-async function resolveCoins(url: URL): Promise<{ coins: string[]; source: string }> {
+async function resolveCoins(
+  url: URL,
+  ownerUserId: string,
+  badge: string,
+  allowed: string[],
+  client: PoolClient,
+): Promise<{ coins: string[]; source: string }> {
   const coinsParam = url.searchParams.get("coins");
+  let settingsCoins: string[] = [];
+  try {
+    settingsCoins = dedupeCoins(
+      allowed.length
+        ? allowed
+        : await resolveCoinsFromSettings({ userId: ownerUserId, sessionId: badge, client }),
+    );
+  } catch {
+    settingsCoins = [];
+  }
+
   if (coinsParam) {
     const tokens = coinsParam
       .split(/[,\s]+/)
       .map((token) => token.trim().toUpperCase())
       .filter(Boolean);
     const coins = dedupeCoins(tokens);
-    if (coins.length) return { coins, source: "query" };
+    const filtered = settingsCoins.length ? coins.filter((c) => settingsCoins.includes(c)) : coins;
+    if (filtered.length) return { coins: filtered, source: settingsCoins.length ? "query:filtered" : "query" };
+    if (settingsCoins.length) return { coins: settingsCoins, source: "settings" };
   }
 
-  try {
-    const settingsCoins = await resolveCoinsFromSettings();
-    const coins = dedupeCoins(settingsCoins);
-    if (coins.length) return { coins, source: "settings" };
-  } catch {
-    // ignore parse errors from cookies/session
-  }
+  if (settingsCoins.length) return { coins: settingsCoins, source: "settings" };
 
   return { coins: [...DEFAULT_COINS], source: "fallback" };
 }
 
-async function readBalancesFromLedger(coins: string[], ownerUserId: string | null): Promise<BalanceReadResult> {
+async function readBalancesFromLedger(coins: string[], ownerUserId: string | null, client: PoolClient): Promise<BalanceReadResult> {
   if (!coins.length) return { balances: {}, source: "empty" };
 
   const targets = coins.map((coin) => coin.toUpperCase());
   const zeros = emptyBalances(targets);
 
   try {
-    const { rows } = await db.query<{ asset: string; amount: string | number }>(
+    const executor = client.query.bind(client);
+    const { rows } = await executor<{ asset: string; amount: string | number }>(
       `SELECT DISTINCT ON (asset) asset, amount
          FROM wallet_balances_latest
         WHERE asset = ANY($1::text[])
-          AND ($2::uuid IS NULL OR owner_user_id IS NULL OR owner_user_id = $2::uuid)
-        ORDER BY asset, (owner_user_id = $2::uuid) DESC`,
+          AND ($2::uuid IS NULL OR owner_user_id = $2::uuid)
+        ORDER BY asset`,
       [targets, ownerUserId],
     );
     if (rows?.length) {
@@ -523,12 +585,13 @@ async function readBalancesFromLedger(coins: string[], ownerUserId: string | nul
   }
 
   try {
-    const { rows } = await db.query<{ asset: string; amount: string | number }>(
+    const executor2 = client.query.bind(client);
+    const { rows } = await executor2<{ asset: string; amount: string | number }>(
       `SELECT DISTINCT ON (asset) asset, amount
          FROM balances
         WHERE asset = ANY($1::text[])
-          AND ($2::uuid IS NULL OR owner_user_id IS NULL OR owner_user_id = $2::uuid)
-        ORDER BY asset, (owner_user_id = $2::uuid) DESC, ts_epoch_ms DESC`,
+          AND ($2::uuid IS NULL OR owner_user_id = $2::uuid)
+        ORDER BY asset, ts_epoch_ms DESC`,
       [targets, ownerUserId],
     );
     if (rows?.length) {
@@ -548,10 +611,22 @@ async function readBalancesFromLedger(coins: string[], ownerUserId: string | nul
   return { balances: zeros, source: "fallback:zero" };
 }
 
-async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string | null): Promise<IdPctReadResult> {
+async function readIdPctGrid(
+  coins: string[],
+  tsMs: number,
+  appSessionId: string | null,
+  ownerUserId: string,
+  badge: string,
+  allowedCoins: string[],
+  client?: PoolClient | null,
+): Promise<IdPctReadResult> {
   const targets = coins.map((coin) => coin.toUpperCase());
   const sessionKey = (appSessionId || "global").trim() || "global";
   const baseGrid: IdPctGrid = {};
+  if (!client) {
+    throw new Error("client_required_for_id_pct_grid");
+  }
+  const executor = client.query.bind(client);
   for (const base of targets) {
     baseGrid[base] = {};
     for (const quote of targets) baseGrid[base][quote] = base === quote ? null : 0;
@@ -573,7 +648,14 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
   };
 
   try {
-    const matricesPayload = await buildMatricesLatestPayload({ coins: targets, appSessionId });
+    const matricesPayload = await buildMatricesLatestPayload({
+      coins: targets,
+      appSessionId,
+      userId: ownerUserId,
+      badge,
+      allowedCoins,
+      client,
+    });
     if (matricesPayload.ok) {
       const values = matricesPayload.matrices.id_pct?.values ?? {};
       let populated = false;
@@ -598,7 +680,7 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
 
   if (Number.isFinite(tsMs)) {
     try {
-      const { rows } = await db.query<{ base: string; quote: string; value: number }>(
+      const { rows } = await executor<{ base: string; quote: string; value: number }>(
         `SELECT DISTINCT ON (base, quote) base, quote, value
            FROM matrices.dyn_values
           WHERE matrix_type = 'id_pct'
@@ -617,7 +699,7 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
   }
 
   try {
-    const { rows } = await db.query<{ base: string; quote: string; value: number }>(
+    const { rows } = await executor<{ base: string; quote: string; value: number }>(
       `SELECT DISTINCT ON (base, quote) base, quote, value
          FROM matrices.dyn_values
         WHERE matrix_type = 'id_pct'
@@ -635,7 +717,7 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
 
   if (Number.isFinite(tsMs)) {
     try {
-      const { rows } = await db.query<{ base: string; quote: string; id_pct: number }>(
+      const { rows } = await executor<{ base: string; quote: string; id_pct: number }>(
         `SELECT DISTINCT ON (base, quote) base, quote, id_pct
            FROM id_pct_pairs
           WHERE ts_epoch_ms <= $1
@@ -661,7 +743,7 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
   }
 
   try {
-    const { rows } = await db.query<{ base: string; quote: string; id_pct: number }>(
+    const { rows } = await executor<{ base: string; quote: string; id_pct: number }>(
       `SELECT base, quote, id_pct
          FROM id_pct_latest
         WHERE base = ANY($1::text[])
@@ -693,7 +775,7 @@ async function readIdPctGrid(coins: string[], tsMs: number, appSessionId: string
 
   if (metricKeys.length) {
     try {
-      const { rows } = await db.query<{ metric_key: string; value: number }>(
+      const { rows } = await executor<{ metric_key: string; value: number }>(
         `SELECT DISTINCT ON (metric_key) metric_key, value
            FROM metrics
           WHERE metric_key = ANY($1::text[])
@@ -732,7 +814,8 @@ type VectorFallbackStats = {
 
 async function fetchWindowVectorFallbacks(
   symbols: string[],
-  window: SamplingWindowKey
+  window: SamplingWindowKey,
+  client: PoolClient,
 ): Promise<Record<string, VectorFallbackStats>> {
   const targets = Array.from(
     new Set(
@@ -751,7 +834,8 @@ async function fetchWindowVectorFallbacks(
   };
 
   try {
-    const { rows } = await db.query<Row>(
+    const executor = client.query.bind(client);
+    const { rows } = await executor<Row>(
       `select symbol, v_tend_close, v_swap_close, cycles_count
          from str_aux.v_latest_windows
         where window_label = $1

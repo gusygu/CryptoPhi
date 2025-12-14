@@ -1,4 +1,5 @@
-import { query } from "@/core/db/db_server";
+import { type PoolClient } from "pg";
+import { query, withDbContext } from "@/core/db/db_server";
 import { normalizeCoin } from "@/lib/markets/pairs";
 
 const SORT_SENTINEL = 2_147_483_647;
@@ -18,6 +19,7 @@ export type PairUniverseEntry = {
 
 type FetchOptions = {
   onlyEnabled?: boolean;
+  context?: { userId: string; sessionId: string; isAdmin?: boolean };
 };
 
 function ensureUserId(userId: string | null | undefined): string {
@@ -43,8 +45,16 @@ export function normalizeCoinList(input: unknown): string[] {
   return out;
 }
 
-export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Promise<CoinUniverseEntry[]> {
-  const { rows } = await query<{
+export async function fetchCoinUniverseEntries(
+  options: FetchOptions = {},
+  client?: PoolClient | null,
+): Promise<CoinUniverseEntry[]> {
+  const executor = client
+    ? client.query.bind(client)
+    : options.context
+    ? async <T>(sql: string, params?: any[]) => withDbContext(options.context!, (c) => c.query<T>(sql, params))
+    : query;
+  const { rows } = await executor<{
     symbol: string;
     base_asset: string | null;
     quote_asset: string | null;
@@ -81,28 +91,72 @@ export async function fetchCoinUniverseEntries(options: FetchOptions = {}): Prom
 export async function upsertSessionCoinUniverse(
   sessionId: string,
   symbols: string[],
-  opts: { enable?: boolean } = {}
-): Promise<{ enabled: number }> {
+  opts: { enable?: boolean; context?: { userId: string; isAdmin?: boolean } } = {},
+  client?: PoolClient | null,
+): Promise<{ enabled: number; deleted: number; persistedSymbols: string[] }> {
   const sid = String(sessionId ?? "").trim();
   if (!sid) throw new Error("sessionId required");
   const normalized = normalizeCoinList(symbols).filter((c) => c !== "USDT");
   const syms = normalized.map((c) => `${c}USDT`);
-  if (!syms.length) return { enabled: 0 };
-
   const enable = opts.enable ?? true;
-  const { rows } = await query<{ enabled_count: number }>(
-    `
-      insert into user_space.session_coin_universe(session_id, symbol, enabled)
-      select $1::text, s, $2::boolean from unnest($3::text[]) s
-      on conflict (session_id, symbol) do update
-        set enabled = excluded.enabled,
-            updated_at = now()
-      returning 1
-    `,
-    [sid, enable, syms]
-  );
 
-  return { enabled: rows.length };
+  const run = async (c: PoolClient) => {
+    const { rows } = await c.query<{ enabled_count: number; deleted_count: number }>(
+      `
+        with desired as (
+          select unnest($2::text[]) as symbol
+        ),
+        upserts as (
+          insert into user_space.session_coin_universe(session_id, symbol, enabled)
+          select $1::text, s.symbol, $3::boolean from desired s
+          on conflict (session_id, symbol) do update
+            set enabled = excluded.enabled,
+                updated_at = now()
+          returning 1
+        ),
+        tombstones as (
+          update user_space.session_coin_universe scu
+             set enabled = false,
+                 updated_at = now()
+           where scu.session_id = $1
+             and (
+               not exists (select 1 from desired)
+               or scu.symbol not in (select symbol from desired)
+             )
+          returning 1
+        )
+        select
+          (select count(*) from upserts) as enabled_count,
+          (select count(*) from tombstones)     as deleted_count
+      `,
+      [sid, syms, enable],
+    );
+
+    const { rows: persistedRows } = await c.query<{ symbol: string }>(
+      `select symbol
+         from user_space.session_coin_universe
+        where session_id = $1
+          and enabled = true
+     order by symbol`,
+      [sid],
+    );
+
+    return {
+      enabled: rows[0]?.enabled_count ?? 0,
+      deleted: rows[0]?.deleted_count ?? 0,
+      persistedSymbols: persistedRows.map((r) => r.symbol.toUpperCase()),
+    };
+  };
+
+  if (client) return run(client);
+  const ctx = opts.context;
+  if (!ctx?.userId) {
+    throw new Error("db_context_required_for_session_universe");
+  }
+  return withDbContext(
+    { userId: ctx.userId, sessionId: sid, isAdmin: ctx.isAdmin ?? false },
+    async (c) => run(c),
+  );
 }
 
 // Legacy helper kept for admin/global flows that still use user_id
@@ -159,9 +213,10 @@ export async function upsertUserCoinUniverse(
   };
 }
 
-export async function fetchPairUniversePairs(): Promise<PairUniverseEntry[]> {
+export async function fetchPairUniversePairs(client?: PoolClient | null): Promise<PairUniverseEntry[]> {
+  const executor = client ? client.query.bind(client) : query;
   try {
-    const { rows } = await query<{ base: string | null; quote: string | null }>(
+    const { rows } = await executor<{ base: string | null; quote: string | null }>(
       `
         select base, quote
         from matrices.v_pair_universe
@@ -179,8 +234,8 @@ export async function fetchPairUniversePairs(): Promise<PairUniverseEntry[]> {
   }
 }
 
-export async function fetchPairUniverseCoins(): Promise<string[]> {
-  const pairs = await fetchPairUniversePairs();
+export async function fetchPairUniverseCoins(client?: PoolClient | null): Promise<string[]> {
+  const pairs = await fetchPairUniversePairs(client);
   if (!pairs.length) return [];
 
   const set = new Set<string>();
@@ -192,15 +247,15 @@ export async function fetchPairUniverseCoins(): Promise<string[]> {
   return Array.from(set);
 }
 
-export async function fetchCoinUniverseBases(options: FetchOptions = {}): Promise<string[]> {
-  const entries = await fetchCoinUniverseEntries(options);
+export async function fetchCoinUniverseBases(options: FetchOptions = {}, client?: PoolClient | null): Promise<string[]> {
+  const entries = await fetchCoinUniverseEntries(options, client);
   const bases = entries
     .filter((entry) => (options.onlyEnabled ? entry.enabled : true))
     .map((entry) => entry.base);
   return normalizeCoinList(bases);
 }
 
-export async function syncCoinUniverseFromBases(bases: string[]): Promise<void> {
+export async function syncCoinUniverseFromBases(bases: string[], client?: PoolClient | null): Promise<void> {
   const normalized = normalizeCoinList(bases);
   if (!normalized.length) return;
 
@@ -211,16 +266,21 @@ export async function syncCoinUniverseFromBases(bases: string[]): Promise<void> 
   if (!symbols.length) return;
 
   try {
-    await query(`select settings.sp_sync_coin_universe($1::text[])`, [symbols]);
+    const executor = client ? client.query.bind(client) : query;
+    await executor(`select settings.sp_sync_coin_universe($1::text[])`, [symbols]);
   } catch (err) {
     console.warn("[settings] sync coin universe failed:", err);
   }
 }
 
-export async function recordSettingsCookieSnapshot(jsonValue: string | null | undefined): Promise<void> {
+export async function recordSettingsCookieSnapshot(
+  jsonValue: string | null | undefined,
+  client?: PoolClient | null,
+): Promise<void> {
   if (!jsonValue) return;
+  const executor = client ? client.query.bind(client) : query;
   try {
-    await query(
+    await executor(
       `
         insert into settings.cookies(name, value, updated_at)
         values ('appSettings', $1::jsonb, now())

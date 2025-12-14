@@ -1,5 +1,6 @@
 // src/core/features/moo-aux/measures.ts
 import { db } from "@/core/db/db";
+import type { PoolClient } from "pg";
 
 export { buildMeaAux, buildMeaAuxForCycle, toRenderableRows } from "./grid";
 export type { IdPctGrid, BalancesMap, MeaAuxGrid, MeaPair, MeaRow } from "./grid";
@@ -50,9 +51,17 @@ export async function assembleMoodInputs(ts_ms: number): Promise<MoodInputs> {
 }
 
 /** ---------- register (persist) ---------- */
-export async function saveMoodObservation(appSessionId: string, ts_ms: number, moodLabel: string, weight: number | null, payload: unknown) {
+export async function saveMoodObservation(
+  appSessionId: string,
+  ts_ms: number,
+  moodLabel: string,
+  weight: number | null,
+  payload: unknown,
+  client?: PoolClient | null,
+) {
   try {
-    await db.query(
+    const executor = client ? client.query.bind(client) : db.query.bind(db);
+    await executor(
       `INSERT INTO mea_mood_observations (app_session_id, ts_ms, mn_label, weight, payload)
        VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (app_session_id, ts_ms) DO UPDATE

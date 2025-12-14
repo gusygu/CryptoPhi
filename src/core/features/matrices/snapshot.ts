@@ -1,7 +1,7 @@
 // snapshot.ts - helpers to resolve benchmark snapshots aligned to registry stamps
 
-import { query } from "@/core/db/db_server";
 import { getNearestTsAtOrBefore, getSnapshotByType } from "@/core/db/db";
+import type { PoolClient } from "pg";
 
 export type SnapshotGrid = { ts: number | null; grid: (number | null)[][] };
 
@@ -9,11 +9,16 @@ function emptyGrid(length: number): (number | null)[][] {
   return Array.from({ length }, () => Array.from({ length }, () => null as number | null));
 }
 
-async function resolveLatestSnapshotStampMs(): Promise<number | null> {
+async function resolveLatestSnapshotStampMs(client?: PoolClient | null): Promise<number | null> {
   try {
-    const { rows } = await query<{ snapshot_stamp: string }>(
-      `SELECT snapshot_stamp FROM snapshot.snapshot_registry ORDER BY snapshot_stamp DESC LIMIT 1`
-    );
+    const executor = client ? client.query.bind(client) : null;
+    const { rows } = await (executor
+      ? executor(
+          `SELECT snapshot_stamp FROM snapshot.snapshot_registry ORDER BY snapshot_stamp DESC LIMIT 1`
+        )
+      : (await import("@/core/db/db_server")).query(
+          `SELECT snapshot_stamp FROM snapshot.snapshot_registry ORDER BY snapshot_stamp DESC LIMIT 1`
+        ));
     const raw = rows[0]?.snapshot_stamp;
     if (!raw) return null;
     const ts = Date.parse(raw);
@@ -48,21 +53,22 @@ function rowsToGrid(
 
 export async function fetchSnapshotBenchmarkGrid(
   coins: readonly string[],
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null
 ): Promise<SnapshotGrid> {
   const normalized = coins.map((c) => c.toUpperCase());
   const fallback = emptyGrid(normalized.length);
-  const stampMs = await resolveLatestSnapshotStampMs();
+  const stampMs = await resolveLatestSnapshotStampMs(client);
   if (!Number.isFinite(stampMs)) {
     return { ts: null, grid: fallback };
   }
 
-  const tsMs = await getNearestTsAtOrBefore("benchmark", stampMs!, appSessionId);
+  const tsMs = await getNearestTsAtOrBefore("benchmark", stampMs!, appSessionId, client);
   if (!Number.isFinite(tsMs)) {
     return { ts: null, grid: fallback };
   }
 
-  const rows = await getSnapshotByType("benchmark", tsMs!, normalized, appSessionId);
+  const rows = await getSnapshotByType("benchmark", tsMs!, normalized, appSessionId, client);
   if (!rows.length) {
     return { ts: tsMs!, grid: fallback };
   }

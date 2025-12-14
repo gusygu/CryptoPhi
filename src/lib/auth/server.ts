@@ -2,7 +2,7 @@
 import crypto from "crypto";
 import { cookies, headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import { query, withClient } from "@/core/db";
+import { query, withClient, withDbContext } from "@/core/db";
 
 const SESSION_COOKIE = "session";            // reuse your existing cookie name
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
@@ -96,7 +96,9 @@ export async function ensureAppSessionCookie(userId: string): Promise<string> {
 
   // Best-effort: keep the mapping in user_space.session_map
   try {
-    await query(`select user_space.sp_upsert_session_map($1,$2)`, [badge, userId]);
+    await withDbContext({ userId, sessionId: badge }, (c) =>
+      c.query(`select user_space.sp_upsert_session_map($1,$2)`, [badge, userId]),
+    );
   } catch (err) {
     console.warn("[auth] failed to upsert session_map (ensure)", err);
   }
@@ -241,7 +243,9 @@ export async function createSession(userId: string, req?: NextRequest): Promise<
 
   // map short session_id to user for downstream badge/session resolution
   try {
-    await query(`select user_space.sp_upsert_session_map($1,$2)`, [appSessionId, userId]);
+    await withDbContext({ userId, sessionId: appSessionId }, (c) =>
+      c.query(`select user_space.sp_upsert_session_map($1,$2)`, [appSessionId, userId]),
+    );
   } catch (err) {
     console.warn("[auth] failed to upsert session_map:", err);
   }

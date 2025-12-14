@@ -1,57 +1,99 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies, headers } from "next/headers";
-import { query } from "@/core/db/pool_server";
-import { requireUserSession } from "@/app/(server)/auth/session";
-import { adoptSessionRequestContext } from "@/lib/server/request-context";
+import { withDbContext } from "@/core/db/pool_server";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
+import { getEffectiveSettingsForBadge } from "@/lib/settings/server";
 
 export const runtime = "nodejs";
 
 export async function GET(
   req: NextRequest,
-  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> }
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
 ) {
   const params =
     typeof (context as any)?.params?.then === "function"
       ? await (context as { params: Promise<{ badge?: string }> }).params
       : (context as { params: { badge?: string } }).params;
 
-  const jar = await cookies();
-  const hdrs = await headers();
-  const badgeParam = params?.badge ?? null;
-  const badgeHeader = hdrs.get("x-app-session") || null;
-  const badgeCookie = jar.get("sessionId")?.value ?? null;
-  const legacy = jar.get("appSessionId")?.value ?? jar.get("app_session_id")?.value ?? null;
-  const authCookie = jar.get("session")?.value ?? null;
+  const resolved = await resolveBadgeRequestContext(req, params);
+  if (!resolved.ok) {
+    return NextResponse.json(resolved.body, { status: resolved.status });
+  }
 
-  const session = await requireUserSession();
-  const effectiveBadge = badgeParam || badgeCookie || badgeHeader || legacy || null;
-  adoptSessionRequestContext({
-    userId: session.userId,
-    isAdmin: session.isAdmin,
-    sessionId: effectiveBadge,
-  });
+  const { badge, badgeScope, session } = resolved;
+  const resolvedFromSessionMap = (session as any)?.resolvedFromSessionMap ?? false;
 
-  const dbCtx = await query<{ session_id: string | null; user_id: string | null }>(
-    `select
-       nullif(current_setting('app.current_session_id', true), '') as session_id,
-       nullif(current_setting('app.current_user_id', true), '')   as user_id`,
-    [],
-    { userId: session.userId, sessionId: effectiveBadge, isAdmin: session.isAdmin },
+  const dbCtx = await withDbContext(
+    {
+      userId: session.userId,
+      sessionId: badge,
+      isAdmin: session.isAdmin,
+      path: req.nextUrl.pathname,
+      badgeParam: badgeScope.badgeParam,
+      resolvedFromSessionMap,
+    },
+    async (client, meta) => {
+      const { rows } = await client.query<{
+        session_id: string | null;
+        user_id: string | null;
+        pid: number | null;
+        txid: string | null;
+        now: string;
+      }>(
+        `select
+           nullif(current_setting('app.session_id', true), '') as session_id,
+           nullif(current_setting('app.user_id', true), '')   as user_id,
+           pg_backend_pid() as pid,
+           txid_current_if_assigned() as txid,
+           now()::text as now`,
+      );
+      const row = rows[0] ?? { session_id: null, user_id: null, pid: null, txid: null, now: "" };
+      return {
+        current_session_id: row.session_id ?? null,
+        current_user_id: row.user_id ?? null,
+        pid: row.pid,
+        txid: row.txid,
+        now: row.now,
+        requestId: meta.requestId,
+        dbSeen: meta.dbSeen,
+      };
+    },
   );
+
+  const settings = await getEffectiveSettingsForBadge(badge).catch(() => null);
+  const sessionCookie = req.cookies.get("session")?.value ?? null;
+  const badgeCookie = req.cookies.get("sessionId")?.value ?? null;
 
   return NextResponse.json({
     badge: {
-      param: badgeParam,
-      header: badgeHeader,
-      cookie: badgeCookie,
-      legacyCookie: legacy,
-      effective: effectiveBadge,
+      param: badgeScope.badgeParam,
+      header: badgeScope.badgeHeader,
+      cookie: badgeScope.badgeCookie,
+      legacyCookie: badgeScope.legacyCookie,
+      query: badgeScope.badgeQuery,
+      effective: badge,
     },
-    authCookiePresent: !!authCookie,
-    db: {
-      current_session_id: dbCtx.rows[0]?.session_id ?? null,
-      current_user_id: dbCtx.rows[0]?.user_id ?? null,
+    session: {
+      userId: session.userId,
+      email: session.email,
+      nickname: session.nickname,
+      isAdmin: session.isAdmin,
+      status: session.status,
+      resolvedFromSessionMap,
+    },
+    cookies: {
+      session: sessionCookie,
+      appSessionId: badgeCookie,
     },
     path: req.nextUrl.pathname,
+    db: dbCtx,
+    effectiveSettings: settings
+      ? {
+          badge: settings.badge,
+          coinUniverse: settings.settings.coinUniverse,
+          params: settings.settings.params.values,
+          timing: settings.settings.timing,
+          poll: settings.settings.poll,
+        }
+      : null,
   });
 }

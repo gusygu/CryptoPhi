@@ -376,10 +376,14 @@ class ClientPoller {
     if (!this.leader || !this.state.enabled) return;
     if (this.refreshPromise) return;
     const sessionId = getSessionId();
+    if (!sessionId && (!this.config.refreshUrl || this.config.refreshUrl === "/api/system/refresh")) {
+      // no badge/session available; skip to avoid hitting global/default
+      return;
+    }
     const dynamicUrl =
       this.config.refreshUrl && this.config.refreshUrl !== "/api/system/refresh"
         ? this.config.refreshUrl
-        : `/api/${sessionId ?? "global"}/system/refresh`;
+        : `/api/${sessionId}/system/refresh`;
     const url = dynamicUrl || FALLBACK_CONFIG.refreshUrl;
     const headers = withSessionHeaders({ "content-type": "application/json" });
     this.refreshPromise = (async () => {

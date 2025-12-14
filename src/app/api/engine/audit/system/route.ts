@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import { sql } from "@/core/db/db";
 
 export const dynamic = "force-dynamic";
@@ -29,8 +29,9 @@ type NoisyUserRow = {
 };
 
 export async function GET() {
-  const session = await requireUserSession();
-  if (!session.isAdmin) {
+  const auth = await requireUserSessionApi("global");
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+  if (!auth.ctx.isAdmin) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

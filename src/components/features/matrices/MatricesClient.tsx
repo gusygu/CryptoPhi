@@ -6,6 +6,8 @@ import MooAuxCard from "@/components/features/moo-aux/MooAuxCard";
 import { colorForBenchmarkDelta, colorForChange, withAlpha, type FrozenStage } from "@/components/features/matrices/colors";
 import { useSettings } from "@/lib/settings/client";
 import { loadPreviewSymbolSet } from "@/components/features/matrices/colouring";
+import { getBrowserBadge } from "@/lib/client/badge";
+import { useParams } from "next/navigation";
 
 type MatrixValues = Record<string, Record<string, number | null>>;
 
@@ -694,7 +696,12 @@ function StatCard({ label, value, hint, accent = "#38bdf8" }: StatCardProps) {
   );
 }
 
-export default function MatricesClient() {
+type MatricesClientProps = {
+  badge?: string;
+};
+
+export default function MatricesClient({ badge: badgeProp }: MatricesClientProps) {
+  const params = useParams<{ badge?: string }>();
   const [payload, setPayload] = useState<MatricesLatestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -704,11 +711,18 @@ export default function MatricesClient() {
   const [previewSet, setPreviewSet] = useState<Set<string>>(new Set());
   const { data: settings } = useSettings();
 
+  const badgeFromRoute = useMemo(() => {
+    const raw = params?.badge;
+    return raw ? String(raw) : undefined;
+  }, [params]);
+
   const fetchLatest = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/matrices/latest", { cache: "no-store" });
+      const badge = (badgeProp ?? badgeFromRoute ?? getBrowserBadge() ?? "").trim();
+      if (!badge) throw new Error("badge_required");
+      const res = await fetch(`/api/${encodeURIComponent(badge)}/matrices/latest`, { cache: "no-store" });
       if (!res.ok) {
         throw new Error(`Request failed with status ${res.status}`);
       }
@@ -727,7 +741,7 @@ export default function MatricesClient() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [badgeProp, badgeFromRoute]);
 
   useEffect(() => {
     fetchLatest();

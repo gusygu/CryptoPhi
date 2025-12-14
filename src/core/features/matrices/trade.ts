@@ -1,7 +1,7 @@
 // trade.ts - helpers to resolve trade-stamped benchmark snapshots
 
-import { query } from "@/core/db/db_server";
 import { getNearestTsAtOrBefore, getSnapshotByType, normalizeSessionId } from "@/core/db/db";
+import type { PoolClient } from "pg";
 
 export type TradeGrid = { ts: number | null; grid: (number | null)[][] };
 
@@ -34,35 +34,48 @@ function rowsToGrid(
 
 export async function fetchTradeBenchmarkGrid(
   coins: readonly string[],
-  appSessionId?: string | null
+  appSessionId?: string | null,
+  client?: PoolClient | null
 ): Promise<TradeGrid> {
   const normalized = coins.map((c) => c.toUpperCase());
   const fallback = emptyGrid(normalized.length);
   const sessionKey = await normalizeSessionId(appSessionId);
 
   try {
-    const { rows } = await query<{ ts_ms: string | null | number }>(
-      `
+    const executor = client ? client.query.bind(client) : null;
+    const { rows } = await (executor
+      ? executor<{ ts_ms: string | null | number }>(
+          `
         SELECT (max(EXTRACT(EPOCH FROM trade_ts)) * 1000)::bigint AS ts_ms
           FROM matrices.dyn_values
          WHERE matrix_type = 'benchmark_trade'
            AND trade_stamp = true
            AND coalesce(meta->>'app_session_id','global') = $1
       `,
-      [sessionKey]
-    );
+          [sessionKey]
+        )
+      : (await import("@/core/db/db_server")).query<{ ts_ms: string | null | number }>(
+          `
+        SELECT (max(EXTRACT(EPOCH FROM trade_ts)) * 1000)::bigint AS ts_ms
+          FROM matrices.dyn_values
+         WHERE matrix_type = 'benchmark_trade'
+           AND trade_stamp = true
+           AND coalesce(meta->>'app_session_id','global') = $1
+      `,
+          [sessionKey]
+        ));
 
     const tsRaw = rows[0]?.ts_ms;
     if (tsRaw == null) return { ts: null, grid: fallback };
     const stampMs = Number(tsRaw);
     if (!Number.isFinite(stampMs)) return { ts: null, grid: fallback };
 
-    const tsMs = await getNearestTsAtOrBefore("benchmark_trade", stampMs, sessionKey);
+    const tsMs = await getNearestTsAtOrBefore("benchmark_trade", stampMs, sessionKey, client);
     if (!Number.isFinite(tsMs)) {
       return { ts: null, grid: fallback };
     }
 
-    const snapshotRows = await getSnapshotByType("benchmark_trade", tsMs!, normalized, sessionKey);
+    const snapshotRows = await getSnapshotByType("benchmark_trade", tsMs!, normalized, sessionKey, client);
     if (!snapshotRows.length) {
       return { ts: tsMs!, grid: fallback };
     }

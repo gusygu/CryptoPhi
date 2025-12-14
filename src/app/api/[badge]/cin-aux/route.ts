@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { applyMoveAndHydrate } from "@/core/features/cin-aux";
-import { requireUserSession } from "@/app/(server)/auth/session";
+import { requireUserSessionApi } from "@/app/(server)/auth/session";
 
-export async function POST(req: NextRequest) {
+export async function POST(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
   try {
     // Ensure request context carries user/badge for RLS-scoped tables.
-    await requireUserSession();
+    const params =
+      typeof (context as any)?.params?.then === "function"
+        ? await (context as { params: Promise<{ badge?: string }> }).params
+        : (context as { params: { badge?: string } }).params;
+    const badge = params?.badge ?? "";
+    const auth = await requireUserSessionApi(badge);
+    if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
+
     const body = await req.json();
     const res = await applyMoveAndHydrate({
       sessionId: body.sessionId,
