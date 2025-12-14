@@ -9,6 +9,7 @@ import {
   normalizeCoinList,
   syncCoinUniverseFromBases,
   upsertSessionCoinUniverse,
+  upsertUserCoinUniverse,
 } from "@/lib/settings/coin-universe";
 import { DEFAULT_SETTINGS, migrateSettings, type AppSettings } from "./schema";
 import { resolveCycleSeconds } from "@/core/settings/time";
@@ -106,6 +107,21 @@ export async function serializeSettingsCookie(
   if (isAdmin) {
     const normalizedCoins = normalizeCoinList(merged.coinUniverse);
     await syncCoinUniverseFromBases(normalizedCoins, client);
+    // Also persist per-user + per-session rows so admin reads resolve via RLS views.
+    if (session?.userId) {
+      await upsertUserCoinUniverse(
+        session.userId,
+        normalizedCoins,
+        { enable: true, autoDisable: true },
+        client ?? undefined,
+      );
+      await upsertSessionCoinUniverse(
+        sessionKey,
+        normalizedCoins,
+        { enable: true, context: { userId: session.userId, isAdmin: session.isAdmin } },
+        client ?? undefined,
+      );
+    }
     merged.coinUniverse = normalizedCoins;
   } else {
     const { persistedSymbols } = await upsertSessionCoinUniverse(

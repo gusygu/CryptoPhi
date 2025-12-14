@@ -163,7 +163,8 @@ export async function upsertSessionCoinUniverse(
 export async function upsertUserCoinUniverse(
   userId: string,
   symbols: string[],
-  opts: { enable?: boolean; autoDisable?: boolean } = {}
+  opts: { enable?: boolean; autoDisable?: boolean } = {},
+  client?: PoolClient | null,
 ): Promise<{ enabled: number; disabled: number }> {
   const uid = ensureUserId(userId);
   const normalized = normalizeCoinList(symbols).filter((c) => c !== "USDT");
@@ -173,7 +174,8 @@ export async function upsertUserCoinUniverse(
   const enable = opts.enable ?? true;
   const autoDisable = opts.autoDisable ?? true;
 
-  const { rows } = await query<{ enabled_count: number; disabled_count: number }>(
+  const executor = client ? client.query.bind(client) : query;
+  const { rows } = await executor<{ enabled_count: number; disabled_count: number }>(
     `
       with desired as (
         select unnest($2::text[]) as symbol

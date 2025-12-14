@@ -4,11 +4,14 @@ import { cookies } from "next/headers";
 import { getAll, serializeSettingsCookie } from "@/lib/settings/server";
 import { requireUserSessionApi } from "@/app/(server)/auth/session";
 import { withDbContext } from "@/core/db/pool_server";
-import { upsertSessionCoinUniverse } from "@/lib/settings/coin-universe";
+import { upsertSessionCoinUniverse, upsertUserCoinUniverse } from "@/lib/settings/coin-universe";
 import { adoptSessionRequestContext } from "@/lib/server/request-context";
 import { resolveBadgeScope } from "@/lib/server/badge-scope";
 
-const NO_STORE = { "Cache-Control": "no-store" };
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE = { "Cache-Control": "no-store, max-age=0" };
 
 export async function GET(
   req: NextRequest,
@@ -92,10 +95,13 @@ export async function POST(
           incoming,
           { client, session, sessionKey: badge },
         );
-        const res = NextResponse.json({
-          ok: true,
-          settings: { ...settings, coinUniverse: persistedCoinUniverse ?? settings.coinUniverse },
-        });
+        const res = NextResponse.json(
+          {
+            ok: true,
+            settings: { ...settings, coinUniverse: persistedCoinUniverse ?? settings.coinUniverse },
+          },
+          { headers: NO_STORE },
+        );
         res.cookies.set(cookie.name, cookie.value, cookie.options);
         return res;
       },
@@ -182,6 +188,21 @@ export async function PUT(
           );
 
         await client.query(`select settings.sync_coin_universe(true, 'USDT')`);
+        // keep admin's per-user/session copies in sync for RLS reads
+        if (session?.userId) {
+          await upsertUserCoinUniverse(
+            session.userId,
+            enable,
+            { enable: true, autoDisable: true },
+            client,
+          );
+          await upsertSessionCoinUniverse(
+            badge,
+            enable,
+            { enable: true, context: { userId: session.userId, isAdmin: session.isAdmin } },
+            client,
+          );
+        }
       } else if (session?.userId) {
         // Per-session universe override: treat "enable" list as desired set
         await upsertSessionCoinUniverse(
@@ -192,7 +213,7 @@ export async function PUT(
         );
       }
 
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true }, { headers: NO_STORE });
     },
   );
 }

@@ -15,7 +15,6 @@ import { computeSampledMetrics } from "@/core/features/str-aux/calc/panel";
 import type { StatsOptions } from "@/core/features/str-aux/calc/stats";
 import type { SamplingWindowKey } from "@/core/features/str-aux/sampling";
 import { buildMatricesLatestPayload } from "@/app/api/[badge]/matrices/latest/route";
-import { unstable_noStore as noStore } from "next/cache";
 import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 
 // NEW: mood imports (added in lib/mood.ts per our plan)
@@ -30,7 +29,7 @@ import {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const CACHE_HEADERS = { "Cache-Control": "no-store" };
+const CACHE_HEADERS = { "Cache-Control": "no-store, max-age=0" };
 const DEFAULT_COINS = ["USDT", "BTC", "ETH", "BNB", "SOL"];
 const STR_MOOD_WINDOW: SamplingWindowKey =
   (process.env.MOO_AUX_STR_WINDOW as SamplingWindowKey) ?? "30m";
@@ -72,9 +71,11 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
   let badge: string | null = null;
   let resolvedFromSessionMap = false;
   try {
-    noStore();
+    const paramsMaybe = (context as any)?.params;
+    const params =
+      paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
     const url = new URL(req.url);
-    const resolved = await resolveBadgeRequestContext(req, context?.params);
+    const resolved = await resolveBadgeRequestContext(req, params);
     if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
     badge = resolved.badge;
     ownerUserId = resolved.session.userId;
@@ -102,6 +103,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
           resolvedFromSessionMap,
           source: coinsSource,
           coins: initialCoins,
+          coinsUsed: coins,
         }),
       );
     }
@@ -222,6 +224,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
     headers.set("x-user-uuid", ownerUserId ?? "");
     headers.set("x-session-id", badge);
     headers.set("x-universe", coins.join(","));
+    headers.set("Cache-Control", "no-store, max-age=0");
     await client.query("COMMIT");
     return NextResponse.json(
       {
@@ -275,7 +278,7 @@ export async function GET(req: NextRequest, context: { params: { badge?: string 
         coinsUsed: [],
         resolvedFromSessionMap,
       },
-      { status: 500, headers: CACHE_HEADERS },
+      { status: 500, headers: { ...CACHE_HEADERS, "Cache-Control": "no-store, max-age=0" } },
     );
   } finally {
     client?.release?.();

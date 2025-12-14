@@ -25,7 +25,6 @@ import type {
   getFrozenSetFromMatricesLatest,
 } from "@/core/features/matrices/matrices";
 import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
-import { unstable_noStore as noStore } from "next/cache";
 import { getPool, type PoolClient } from "@/core/db/pool_server";
 // keep these aliases so TS treats the imports as “used” (still type-only)
 type _FrozenPairKey = FrozenPairKey;
@@ -470,13 +469,15 @@ export async function GET(
   req: NextRequest,
   context: { params: { badge: string } },
 ) {
-  noStore();
   let client: PoolClient | null = null;
   let badge: string | null = null;
   let userId: string | null = null;
   let resolvedFromSessionMap = false;
   try {
-    const resolved = await resolveBadgeRequestContext(req, context?.params);
+    const paramsMaybe = (context as any)?.params;
+    const params =
+      paramsMaybe && typeof paramsMaybe.then === "function" ? await paramsMaybe : paramsMaybe;
+    const resolved = await resolveBadgeRequestContext(req, params);
     if (!resolved.ok) {
       return NextResponse.json(resolved.body, { status: resolved.status });
     }
@@ -519,6 +520,7 @@ export async function GET(
           resolvedFromSessionMap,
           coins: payload.ok ? payload.meta.universe : [],
           allowedCoins,
+          coinsUsed: payload.ok ? payload.meta.universe : [],
         }),
       );
     }
@@ -529,6 +531,7 @@ export async function GET(
     if (payload.ok) {
       resHeaders.set("x-universe", payload.meta.universe.join(","));
     }
+    resHeaders.set("Cache-Control", "no-store, max-age=0");
     const responseBody = {
       ...payload,
       resolved: { badge, userId, sessionId: badge },
@@ -546,6 +549,7 @@ export async function GET(
     if (userId) resHeaders.set("x-user-uuid", userId);
     if (badge) resHeaders.set("x-session-id", badge);
     console.error("[matrices/latest] internal error:", err);
+    resHeaders.set("Cache-Control", "no-store, max-age=0");
     return NextResponse.json(
       {
         ok: false,
