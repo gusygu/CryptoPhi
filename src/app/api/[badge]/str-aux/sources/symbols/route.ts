@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withDbContext } from "@/core/db/db_server";
 import { fetchCoinUniverseEntries } from "@/lib/settings/coin-universe";
-import { requireUserSessionApi } from "@/app/(server)/auth/session";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { resolveBadgeScope } from "@/lib/server/badge-scope";
 
 export const runtime = "nodejs";
@@ -56,11 +56,11 @@ export async function GET(
         : (context as { params: { badge?: string } }).params;
     const badgeScope = resolveBadgeScope(req, { badge: params?.badge ?? null });
     const badge = badgeScope.effectiveBadge;
-    const auth = await requireUserSessionApi(badge ?? "");
-    if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status });
+    const resolved = await resolveBadgeRequestContext(req, { badge });
+    if (!resolved.ok) {
+      return NextResponse.json(resolved.body, { status: resolved.status });
     }
-    const session = auth.ctx;
+    const session = resolved.session;
     if (!badge) {
       return NextResponse.json({ ok: false, error: "missing_session_badge" }, { status: 401 });
     }
