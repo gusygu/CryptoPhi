@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS user_space.session_coin_universe (
 ALTER TABLE user_space.session_coin_universe ENABLE ROW LEVEL SECURITY;
 DO $pol$
 BEGIN
+  IF to_regclass('user_space.session_map') IS NULL THEN
+    RAISE NOTICE 'Skipping session_coin_universe policy until session_map exists';
+    RETURN;
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
     WHERE schemaname = 'user_space'
@@ -258,6 +262,36 @@ BEGIN
     $q$;
   END IF;
 END$$;
+
+-- Retry session_coin_universe policy now that session_map exists
+DO $pol2$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'user_space'
+      AND tablename = 'session_coin_universe'
+      AND policyname = 'session_coin_universe_owned'
+  ) THEN
+    CREATE POLICY session_coin_universe_owned ON user_space.session_coin_universe
+      USING (
+        session_id = nullif(current_setting('app.current_session_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM user_space.session_map sm
+           WHERE sm.session_id = user_space.session_coin_universe.session_id
+             AND sm.user_id = nullif(current_setting('app.current_user_id', true), '')::uuid
+        )
+      )
+      WITH CHECK (
+        session_id = nullif(current_setting('app.current_session_id', true), '')
+        AND EXISTS (
+          SELECT 1 FROM user_space.session_map sm
+           WHERE sm.session_id = user_space.session_coin_universe.session_id
+             AND sm.user_id = nullif(current_setting('app.current_user_id', true), '')::uuid
+        )
+      );
+  END IF;
+END
+$pol2$;
 
 CREATE OR REPLACE FUNCTION user_space.sp_upsert_params(
   p_primary_interval_ms int DEFAULT 30000,

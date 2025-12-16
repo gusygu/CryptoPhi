@@ -1,5 +1,11 @@
 -- Views for cin-aux runtime analytics and moo alignment.
 
+-- Ensure ownership columns exist for RLS-safe views
+ALTER TABLE IF EXISTS cin_aux.rt_session   ADD COLUMN IF NOT EXISTS owner_user_id uuid;
+ALTER TABLE IF EXISTS cin_aux.rt_balance   ADD COLUMN IF NOT EXISTS owner_user_id uuid;
+ALTER TABLE IF EXISTS cin_aux.rt_reference ADD COLUMN IF NOT EXISTS owner_user_id uuid;
+ALTER TABLE IF EXISTS cin_aux.rt_move      ADD COLUMN IF NOT EXISTS owner_user_id uuid;
+
 -- ensure rt_move has provenance columns before views reference them
 ALTER TABLE IF EXISTS cin_aux.rt_move
   ADD COLUMN IF NOT EXISTS src_symbol text,
@@ -171,6 +177,7 @@ CREATE TABLE IF NOT EXISTS cin_aux.session_link (
     REFERENCES cin_aux.rt_session(session_id) ON DELETE CASCADE,
   owner_user_id uuid
 );
+ALTER TABLE IF EXISTS cin_aux.session_link ADD COLUMN IF NOT EXISTS owner_user_id uuid;
 
 DROP VIEW IF EXISTS cin_aux.v_mea_alignment;
 CREATE OR REPLACE VIEW cin_aux.v_mea_alignment AS

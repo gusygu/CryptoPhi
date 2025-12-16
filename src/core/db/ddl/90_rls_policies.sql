@@ -7,6 +7,167 @@ BEGIN
   PERFORM 1;
 END$$;
 
+-- Ensure owner_user_id columns exist for RLS guards (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'audit' AND table_name = 'user_cycle_log' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE audit.user_cycle_log ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'audit' AND table_name = 'str_sampling_log' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE audit.str_sampling_log ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'audit' AND table_name = 'user_reports' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE audit.user_reports ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'audit' AND table_name = 'error_queue' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE audit.error_queue ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'sessions' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.sessions ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_session' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_session ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_balance' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_balance ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_reference' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_reference ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_lot' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_lot ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_move' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_move ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_move_lotlink' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_move_lotlink ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_mark' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_mark ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'cin_aux' AND table_name = 'rt_imprint_luggage' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE cin_aux.rt_imprint_luggage ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'mea_dynamics' AND table_name = 'cycles' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE mea_dynamics.cycles ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'mea_dynamics' AND table_name = 'mea_symbol' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE mea_dynamics.mea_symbol ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'mea_dynamics' AND table_name = 'dynamics_snapshot' AND column_name = 'owner_user_id'
+  ) THEN
+    ALTER TABLE mea_dynamics.dynamics_snapshot ADD COLUMN owner_user_id uuid;
+  END IF;
+END$$;
+
 -- Audit tables RLS
 ALTER TABLE audit.user_cycle_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_user_cycle_owner ON audit.user_cycle_log;
