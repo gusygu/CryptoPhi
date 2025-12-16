@@ -141,7 +141,7 @@ function AdminInviteLinkBox() {
         <button
           type="button"
           onClick={handleCopy}
-          disabled={!link?.url}
+          disabled={!link?.inviteUrl}
           className="px-2 py-1 rounded-md border border-zinc-700 bg-zinc-900 text-[11px] text-zinc-200 disabled:opacity-40"
         >
           {copied ? "Copied" : "Copy"}
