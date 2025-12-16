@@ -18,16 +18,22 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const toEmail =
+    const rawEmail =
       typeof body?.toEmail === "string"
         ? body.toEmail
         : typeof body?.email === "string"
         ? body.email
+        : typeof body?.recipientEmail === "string"
+        ? body.recipientEmail
         : "";
+    const toEmail = rawEmail.trim().toLowerCase();
     const templateKey = typeof body?.templateKey === "string" ? body.templateKey : null;
 
-    if (!toEmail || !templateKey) {
-      return jsonError("INVALID_REQUEST", "toEmail and templateKey are required", 400);
+    if (!toEmail) {
+      return jsonError("recipient_email_required", "Recipient email is required", 400);
+    }
+    if (!templateKey) {
+      return jsonError("INVALID_REQUEST", "templateKey is required", 400);
     }
 
     const { link, stats } = await createInviteLink({
@@ -53,4 +59,3 @@ export async function POST(req: NextRequest) {
     return jsonError("INVITE_SEND_FAILED", err?.message ?? "Failed to send invite", 500);
   }
 }
-

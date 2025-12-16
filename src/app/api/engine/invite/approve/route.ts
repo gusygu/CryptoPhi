@@ -49,7 +49,12 @@ export async function POST(req: Request) {
   const { session } = adminCheck;
 
   const body = await req.json().catch(() => ({}));
-  const requestId = body.request_id as string | undefined;
+  const requestIdRaw =
+    (typeof body.request_id === "string" && body.request_id.trim()) ||
+    (typeof body.requestId === "string" && body.requestId.trim()) ||
+    (typeof body.id === "string" && body.id.trim()) ||
+    "";
+  const requestId = requestIdRaw.trim() || undefined;
   const expiresInHoursRaw = Number(body.expires_in_hours ?? 48);
   const expiresInHours = Number.isFinite(expiresInHoursRaw)
     ? Math.max(1, Math.min(24 * 30, expiresInHoursRaw))

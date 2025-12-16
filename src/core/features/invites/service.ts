@@ -58,6 +58,13 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function pickColumn(cols: Set<string>, choices: string[], label: string) {
+  for (const choice of choices) {
+    if (cols.has(choice)) return choice;
+  }
+  throw new InviteError("INVITE_SCHEMA_MISMATCH", `admin.invites missing ${label} column`, 500);
+}
+
 function hashToken(raw: string) {
   return createHash("sha256").update(raw.trim()).digest("hex");
 }
@@ -73,7 +80,7 @@ function baseUrl(origin?: string | null) {
 }
 
 function buildInviteUrl(rawToken: string, origin?: string | null) {
-  return `${baseUrl(origin)}/register?token=${encodeURIComponent(rawToken)}`;
+  return `${baseUrl(origin)}/auth/register?invite=${encodeURIComponent(rawToken)}`;
 }
 
 async function resolveManagerId(email: string, client: any): Promise<string | null> {
@@ -251,7 +258,10 @@ export async function createInviteLink(params: {
     throw new InviteError("UNAUTHENTICATED", "Sign in required", 401);
   }
   const normalizedRecipient = normalizeEmail(recipientEmail || "");
-  if (!normalizedRecipient || !normalizedRecipient.includes("@")) {
+  if (!normalizedRecipient) {
+    throw new InviteError("recipient_email_required", "Recipient email is required", 400);
+  }
+  if (!normalizedRecipient.includes("@")) {
     throw new InviteError("INVALID_EMAIL", "A valid recipient email is required", 400);
   }
 
@@ -319,96 +329,107 @@ export async function createInviteLink(params: {
       throw new InviteError("INVITE_CREATE_FAILED", "Failed to create invite token", 500);
     }
 
+    const now = new Date();
     const inviteId = tokenRow.invite_id;
     const inviteRole = (role && role.trim()) || "user";
     const inviteTokenUuid = randomUUID();
 
     const cols = await getInviteColumns(client);
 
-    const idCol =
-      cols.has("id") ? "id"
-      : cols.has("invite_id") ? "invite_id"
-      : "id";
+    const inviteIdCol = pickColumn(cols, ["invite_id", "id"], "primary key");
+    const targetEmailCol = pickColumn(cols, ["target_email", "recipient_email", "email"], "recipient email");
+    const statusCol = pickColumn(cols, ["status"], "status");
+    const createdByRoleCol = pickColumn(cols, ["created_by_role"], "created_by_role");
+    const tokenCol = pickColumn(cols, ["token", "invite_token_uuid"], "token");
+    const expiresAtCol = pickColumn(cols, ["expires_at"], "expires_at");
 
-    const emailCol =
-      cols.has("target_email") ? "target_email"
-      : cols.has("recipient_email") ? "recipient_email"
-      : cols.has("email") ? "email"
+    const recipientMirrorCol =
+      targetEmailCol !== "recipient_email" && cols.has("recipient_email") ? "recipient_email" : null;
+    const createdByCol = cols.has("created_by") ? "created_by" : null;
+    const createdByEmailCol = cols.has("created_by_email") ? "created_by_email" : null;
+    const managerIdCol = cols.has("manager_id") ? "manager_id" : null;
+    const roleCol = cols.has("role") ? "role" : null;
+    const tokenHashCol = cols.has("invite_token_hash")
+      ? "invite_token_hash"
+      : cols.has("token_hash")
+      ? "token_hash"
       : null;
+    const inviteTokenUuidCol = cols.has("invite_token_uuid") ? "invite_token_uuid" : null;
+    const noteCol = cols.has("notes") ? "notes" : cols.has("note") ? "note" : null;
+    const createdAtCol = cols.has("created_at") ? "created_at" : null;
+    const updatedAtCol = cols.has("updated_at") ? "updated_at" : null;
 
-    if (!emailCol) {
-      throw new Error("No email column found on admin.invites");
+    const creatorRole = tierInfo.tier === "mgmt" ? "manager" : session.isAdmin ? "admin" : "user";
+
+    const insertCols: string[] = [
+      inviteIdCol,
+      targetEmailCol,
+      statusCol,
+      createdByRoleCol,
+      tokenCol,
+      expiresAtCol,
+    ];
+    const insertVals: any[] = [
+      inviteId,
+      normalizedRecipient,
+      "pending",
+      creatorRole,
+      inviteTokenUuid,
+      expiresAt.toISOString(),
+    ];
+
+    if (recipientMirrorCol) {
+      insertCols.push(recipientMirrorCol);
+      insertVals.push(normalizedRecipient);
     }
 
-    const insertCols: string[] = [idCol, emailCol];
-    const insertVals: any[] = [inviteId, normalizedRecipient];
-
-    if (cols.has("status")) {
-      insertCols.push("status");
-      insertVals.push("pending");
-    }
-
-    if (cols.has("created_at")) {
-      insertCols.push("created_at");
-      insertVals.push(new Date());
-    }
-
-    if (cols.has("created_by")) {
-      insertCols.push("created_by");
+    if (createdByCol) {
+      insertCols.push(createdByCol);
       insertVals.push(session.userId);
     }
 
-    if (cols.has("role")) {
-      insertCols.push("role");
-      insertVals.push(inviteRole);
-    }
-
-    if (cols.has("created_by_role")) {
-      insertCols.push("created_by_role");
-      insertVals.push(tierInfo.tier === "mgmt" ? "manager" : tierInfo.tier);
-    }
-
-    if (cols.has("created_by_email")) {
-      insertCols.push("created_by_email");
+    if (createdByEmailCol) {
+      insertCols.push(createdByEmailCol);
       insertVals.push(session.email);
     }
 
-    if (cols.has("manager_id") && tierInfo.managerId) {
-      insertCols.push("manager_id");
+    if (managerIdCol && tierInfo.managerId) {
+      insertCols.push(managerIdCol);
       insertVals.push(tierInfo.managerId);
     }
 
-    if (cols.has("expires_at")) {
-      insertCols.push("expires_at");
-      insertVals.push(expiresAt.toISOString());
+    if (roleCol) {
+      insertCols.push(roleCol);
+      insertVals.push(inviteRole);
     }
 
-    if (cols.has("invite_token_uuid")) {
-      insertCols.push("invite_token_uuid");
-      insertVals.push(inviteTokenUuid);
-    } else if (cols.has("token")) {
-      insertCols.push("token");
-      insertVals.push(inviteTokenUuid);
-    }
-
-    if (cols.has("invite_token_hash")) {
-      insertCols.push("invite_token_hash");
-      insertVals.push(tokenHash);
-    } else if (cols.has("token_hash")) {
-      insertCols.push("token_hash");
+    if (tokenHashCol) {
+      insertCols.push(tokenHashCol);
       insertVals.push(tokenHash);
     }
 
-    if (cols.has("note") && note) {
-      insertCols.push("note");
-      insertVals.push(note);
+    if (inviteTokenUuidCol && inviteTokenUuidCol !== tokenCol) {
+      insertCols.push(inviteTokenUuidCol);
+      insertVals.push(inviteTokenUuid);
+    }
+
+    if (noteCol && note) {
+      insertCols.push(noteCol);
+      insertVals.push(note.trim());
+    }
+
+    if (createdAtCol) {
+      insertCols.push(createdAtCol);
+      insertVals.push(now);
+    }
+
+    if (updatedAtCol) {
+      insertCols.push(updatedAtCol);
+      insertVals.push(now);
     }
 
     const placeholders = insertVals.map((_, i) => `$${i + 1}`).join(", ");
-    await client.query(
-      `INSERT INTO admin.invites (${insertCols.join(", ")}) VALUES (${placeholders})`,
-      insertVals
-    );
+    await client.query(`INSERT INTO admin.invites (${insertCols.join(", ")}) VALUES (${placeholders})`, insertVals);
 
     await client.query("COMMIT");
 

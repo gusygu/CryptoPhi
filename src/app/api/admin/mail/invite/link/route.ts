@@ -18,17 +18,20 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const email =
+    const rawEmail =
       typeof body?.email === "string"
         ? body.email
         : typeof body?.targetEmail === "string"
         ? body.targetEmail
+        : typeof body?.recipientEmail === "string"
+        ? body.recipientEmail
         : typeof body?.toEmail === "string"
         ? body.toEmail
         : "";
+    const email = rawEmail.trim().toLowerCase();
 
     if (!email) {
-      return jsonError("INVALID_EMAIL", "email is required", 400);
+      return jsonError("recipient_email_required", "Recipient email is required", 400);
     }
 
     const role = typeof body?.role === "string" ? body.role : null;
@@ -56,4 +59,3 @@ export async function POST(req: NextRequest) {
     return jsonError("INVITE_CREATE_FAILED", err?.message ?? "Failed to create invite", 500);
   }
 }
-
