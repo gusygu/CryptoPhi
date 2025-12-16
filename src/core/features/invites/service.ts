@@ -105,7 +105,7 @@ async function resolveTier(session: SessionLike, client: any): Promise<{ tier: I
 }
 
 async function getInviteColumns(client: any): Promise<Set<string>> {
-  const r = await client.query<{ column_name: string }>(
+  const r = await client.query(
     `
     SELECT column_name
     FROM information_schema.columns
