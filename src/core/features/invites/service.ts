@@ -118,7 +118,7 @@ async function getInviteColumns(client: any): Promise<Set<string>> {
 
 async function ensureCompatView(client: any) {
   try {
-    const exists = await client.query<{ exists: boolean }>(
+    const exists = await client.query(
       `
       SELECT EXISTS (
         SELECT 1 FROM information_schema.views
