@@ -3,21 +3,40 @@
 
 import { useState } from "react";
 import InvitesAdminClient from "./InvitesAdminClient";
+import { NonJsonResponseError, safeJson } from "@/lib/client/safeJson";
 
-interface AdminInviteLink {
-  invite_id: string;
-  token: string;
-  url: string;
+interface InviteStats {
+  weekUsed: number;
+  weekLimit: number;
+  lifetimeUsed: number;
+  lifetimeLimit: number;
+  tier: string;
+}
+
+interface InviteLink {
+  inviteId: string;
+  inviteUrl: string;
+  expiresAt: string;
 }
 
 interface ApiLink {
   ok: boolean;
-  link?: AdminInviteLink;
-  error?: string;
+  data?: {
+    inviteId: string;
+    inviteUrl: string;
+    expiresAt: string;
+    stats?: InviteStats;
+  };
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+      };
 }
 
 function AdminInviteLinkBox() {
-  const [link, setLink] = useState<AdminInviteLink | null>(null);
+  const [link, setLink] = useState<InviteLink | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -40,23 +59,37 @@ function AdminInviteLinkBox() {
       if (res.status === 403) {
         throw new Error("Admin access required.");
       }
-      const data: ApiLink = await res.json();
-      if (!data.ok || !data.link) {
-        throw new Error(data.error || "Failed to generate link");
+      const data = await safeJson<ApiLink>(res);
+      if (!data.ok || !data.data) {
+        const message =
+          typeof data.error === "string"
+            ? data.error
+            : data.error?.message || "Failed to generate link";
+        throw new Error(message);
       }
-      setLink(data.link);
+      setLink({
+        inviteId: data.data.inviteId,
+        inviteUrl: data.data.inviteUrl,
+        expiresAt: data.data.expiresAt,
+      });
       setTargetEmail("");
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      if (e instanceof NonJsonResponseError) {
+        setError(
+          `${e.message} (status ${e.status})${e.snippet ? `: ${e.snippet}` : ""}`
+        );
+      } else {
+        setError(String(e?.message ?? e));
+      }
     } finally {
       setLoading(false);
     }
   }
 
   async function handleCopy() {
-    if (!link?.url) return;
+    if (!link?.inviteUrl) return;
     try {
-      await navigator.clipboard.writeText(link.url);
+      await navigator.clipboard.writeText(link.inviteUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -122,7 +155,7 @@ function AdminInviteLinkBox() {
         <input
           type="text"
           readOnly
-          value={link?.url ?? ""}
+          value={link?.inviteUrl ?? ""}
           placeholder="Generate a link to see it here"
           className="mt-1 w-full rounded-md border border-zinc-700 bg-black/40 px-2 py-1 text-xs text-zinc-50 opacity-90"
         />

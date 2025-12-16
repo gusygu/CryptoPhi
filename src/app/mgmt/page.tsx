@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { NonJsonResponseError, safeJson } from "@/lib/client/safeJson";
 
 interface Invite {
   invite_id: string;
@@ -34,6 +35,13 @@ interface ApiListCommunity {
   error?: string;
 }
 
+function describeError(err: any) {
+  if (err instanceof NonJsonResponseError) {
+    return `${err.message} (status ${err.status})${err.snippet ? `: ${err.snippet}` : ""}`;
+  }
+  return String(err?.message ?? err);
+}
+
 export default function ManagerMgmtPage() {
   const [invites, setInvites] = useState<Invite[]>([]);
   const [community, setCommunity] = useState<CommunityMember[]>([]);
@@ -60,8 +68,8 @@ export default function ManagerMgmtPage() {
         return;
       }
 
-      const invData: ApiListInvites = await invRes.json();
-      const comData: ApiListCommunity = await comRes.json();
+      const invData = await safeJson<ApiListInvites>(invRes);
+      const comData = await safeJson<ApiListCommunity>(comRes);
 
       if (!invData.ok) throw new Error(invData.error || "Failed invites");
       if (!comData.ok) throw new Error(comData.error || "Failed community");
@@ -69,7 +77,7 @@ export default function ManagerMgmtPage() {
       setInvites(invData.invites ?? []);
       setCommunity(comData.community ?? []);
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      setError(describeError(e));
     }
   }
 
@@ -105,13 +113,13 @@ export default function ManagerMgmtPage() {
         throw new Error("This page is only available to community managers.");
       }
 
-      const data = await res.json();
+      const data = await safeJson<ApiListInvites>(res);
       if (!data.ok) throw new Error(data.error || "Failed to create invite");
       setTargetEmail("");
       setNotice("Invite created.");
       await loadAll();
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -136,7 +144,7 @@ export default function ManagerMgmtPage() {
         throw new Error("This page is only available to community managers.");
       }
 
-      const data = await res.json();
+      const data = await safeJson<ApiListCommunity>(res);
       if (!data.ok) throw new Error(data.error || "Failed to update member");
       await loadAll();
       setNotice(
@@ -147,7 +155,7 @@ export default function ManagerMgmtPage() {
           : "Member reactivated."
       );
     } catch (e: any) {
-      setError(String(e?.message ?? e));
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }

@@ -319,9 +319,10 @@ export default async function SettingsPage({
   params,
 }: {
   searchParams?: SearchParams;
-  params?: { badge?: string };
+  params?: Promise<{ badge?: string }> | { badge?: string };
 }) {
-  const session = await requireUserSession(params?.badge);
+  const resolvedRouteParams = params instanceof Promise ? await params : params;
+  const session = await requireUserSession(resolvedRouteParams?.badge);
   const email = session.email;
 
   const s: UserSettings = getUserSettings(email);

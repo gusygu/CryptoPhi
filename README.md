@@ -62,3 +62,9 @@ Maintenance and smoke scripts used for diagnostics, seeding, and orchestration.
 pnpm install
 pnpm run run-ddl       # applies SQL schemas
 pnpm run smoke:pipeline
+
+## Invite API notes
+
+- Set `PUBLIC_BASE_URL` (fallback: `NEXT_PUBLIC_BASE_URL`, `APP_BASE_URL`, request origin) so invite links resolve correctly (links default to `/register?token=...`).
+- The invite schema relies on `pgcrypto` (enabled in `02_core_extensions.sql`) for `gen_random_uuid` and `digest` used in hashed tokens.
+- Invite tokens are stored hashed (`admin.invites.token_hash`, `auth.invite_token.token`); raw tokens only live in returned invite URLs.

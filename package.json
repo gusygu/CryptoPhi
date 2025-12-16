@@ -22,6 +22,8 @@
     "db:clean": "tsx src/scripts/db/clean-db.mts --force",
     "db:ddl": "tsx src/scripts/db/run-ddls.mts",
     "run-ddl": "pnpm db:ddl",
+    "db:migrate": "tsx src/scripts/db/run-migrations.mts",
+    "run-migrations": "pnpm db:migrate",
     "db:reset": "run-s db:clean db:ddl",
     "db:seed:bootstrap": "tsx src/scripts/jobs/seed-bootstrap.ts",
     "worker:sampler": "tsx src/scripts/jobs/str-aux-runner.ts",

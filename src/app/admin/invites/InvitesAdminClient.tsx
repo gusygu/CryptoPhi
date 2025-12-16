@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { NonJsonResponseError, safeJson } from "@/lib/client/safeJson";
 
 type InviteRequest = {
   request_id: string;
@@ -31,6 +32,13 @@ type ActionState =
   | { status: "working"; requestId: string }
   | { status: "error"; error: string };
 
+function describeError(err: any) {
+  if (err instanceof NonJsonResponseError) {
+    return `${err.message} (status ${err.status})${err.snippet ? `: ${err.snippet}` : ""}`;
+  }
+  return String(err?.message ?? err);
+}
+
 export default function InvitesAdminClient() {
   const [filter, setFilter] = useState<StatusFilter>("pending");
   const [items, setItems] = useState<InviteRequest[]>([]);
@@ -49,20 +57,26 @@ export default function InvitesAdminClient() {
       const res = await fetch(`/api/invite/list?${params.toString()}`, {
         cache: "no-store",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await safeJson<{
+        ok: boolean;
+        data?: { items?: InviteRequest[] };
+        error?: any;
+      }>(res);
 
-      if (!res.ok || !data.ok) {
+      if (!res.ok || !data.ok || !data.data) {
         setLoadState({
           status: "error",
-          error: data?.error ?? "load_failed",
+          error:
+            (data?.error && (data.error.message ?? data.error.code ?? data.error)) ||
+            "load_failed",
         });
         return;
       }
 
-      setItems(data.items ?? []);
+      setItems(data.data.items ?? []);
       setLoadState({ status: "loaded" });
-    } catch (err) {
-      setLoadState({ status: "error", error: "network_error" });
+    } catch (err: any) {
+      setLoadState({ status: "error", error: describeError(err) });
     }
   }
 
@@ -78,20 +92,22 @@ export default function InvitesAdminClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ request_id: requestId, expires_in_hours: 48 }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await safeJson<{ ok: boolean; error?: any }>(res);
 
       if (!res.ok || !data.ok) {
         setActionState({
           status: "error",
-          error: data?.error ?? "approve_failed",
+          error:
+            (data?.error && (data.error.message ?? data.error.code ?? data.error)) ||
+            "approve_failed",
         });
         return;
       }
 
       await loadInvites(filter);
       setActionState({ status: "idle" });
-    } catch (err) {
-      setActionState({ status: "error", error: "network_error" });
+    } catch (err: any) {
+      setActionState({ status: "error", error: describeError(err) });
     }
   }
 
@@ -103,20 +119,22 @@ export default function InvitesAdminClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ request_id: requestId }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await safeJson<{ ok: boolean; error?: any }>(res);
 
       if (!res.ok || !data.ok) {
         setActionState({
           status: "error",
-          error: data?.error ?? "reject_failed",
+          error:
+            (data?.error && (data.error.message ?? data.error.code ?? data.error)) ||
+            "reject_failed",
         });
         return;
       }
 
       await loadInvites(filter);
       setActionState({ status: "idle" });
-    } catch (err) {
-      setActionState({ status: "error", error: "network_error" });
+    } catch (err: any) {
+      setActionState({ status: "error", error: describeError(err) });
     }
   }
 
