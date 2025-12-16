@@ -78,7 +78,7 @@ function buildInviteUrl(rawToken: string, origin?: string | null) {
 
 async function resolveManagerId(email: string, client: any): Promise<string | null> {
   try {
-    const q = await client.query<{ manager_id: string }>(
+    const q = await client.query(
       `
       SELECT manager_id
       FROM admin.managers
@@ -187,7 +187,7 @@ async function ensureCompatView(client: any) {
 
 async function readUsage(client: any, createdBy: string) {
   const weekWindow = new Date(Date.now() - 7 * MS_PER_DAY).toISOString();
-  const { rows: weekRows } = await client.query<{ count: string }>(
+  const { rows: weekRows } = await client.query(
     `
     SELECT count(*)::int AS count
     FROM auth.invite_token
@@ -196,7 +196,7 @@ async function readUsage(client: any, createdBy: string) {
     `,
     [createdBy, weekWindow]
   );
-  const { rows: lifetimeRows } = await client.query<{ count: string }>(
+  const { rows: lifetimeRows } = await client.query(
     `
     SELECT count(*)::int AS count
     FROM auth.invite_token
@@ -293,11 +293,7 @@ export async function createInviteLink(params: {
     const tokenHash = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + (expiresInDays ?? DEFAULT_EXPIRES_DAYS) * MS_PER_DAY);
 
-    const tokenInsert = await client.query<{
-      invite_id: string;
-      created_at: string;
-      expires_at: string | null;
-    }>(
+    const tokenInsert = await client.query(
       `
       INSERT INTO auth.invite_token (
         email,
@@ -451,11 +447,11 @@ export async function listInvites(params: {
     await ensureCompatView(client);
     const capped = Math.min(Math.max(Number(limit) || 1, 1), 200);
     try {
-      const rows = await client.query<InviteListItem>(
-        `
-        SELECT
-          id,
-          recipient_email,
+    const rows = await client.query(
+      `
+      SELECT
+        id,
+        recipient_email,
           nickname,
           note,
           status,
@@ -470,7 +466,7 @@ export async function listInvites(params: {
         [status === "pending" ? "pending" : null, capped]
       );
 
-      return rows.rows.map((row) => ({
+      return (rows.rows as InviteListItem[]).map((row) => ({
         ...row,
         id: row.id ?? null,
         recipient_email: row.recipient_email ?? null,
@@ -483,17 +479,7 @@ export async function listInvites(params: {
       }));
     } catch (err) {
       console.warn("[invites] compat view missing; falling back to admin.invites", err);
-      const fallback = await client.query<{
-        id: string | null;
-        invite_id: string | null;
-        target_email: string | null;
-        recipient_email: string | null;
-        status: string | null;
-        created_at: string | null;
-        expires_at: string | null;
-        consumed_at: string | null;
-        note: string | null;
-      }>(
+      const fallback = await client.query(
         `
         SELECT
           COALESCE(invite_id, id) AS id,
@@ -510,7 +496,7 @@ export async function listInvites(params: {
         `,
         [status === "pending" ? "pending" : null, capped]
       );
-      return fallback.rows.map((row) => ({
+      return (fallback.rows as any[]).map((row) => ({
         id: row.id ?? null,
         recipient_email: row.recipient_email ?? null,
         nickname: null,
