@@ -1,0 +1,34 @@
+import { NextRequest, NextResponse } from "next/server";
+import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
+import { setRequestContext } from "@/lib/server/request-context";
+import { buildStatusReport } from "@/core/api/vitals";
+
+async function unwrapBadge(context: { params?: { badge?: string } | Promise<{ badge?: string }> }): Promise<string | null> {
+  const p = (context?.params && typeof (context as any).params?.then === "function")
+    ? await (context as any).params
+    : (context as any)?.params;
+  return p?.badge ?? null;
+}
+
+export async function GET(
+  req: NextRequest,
+  context: { params: { badge?: string } } | { params: Promise<{ badge?: string }> },
+) {
+  const badgeParam = await unwrapBadge(context);
+  const resolved = await resolveBadgeRequestContext(req as any, { badge: badgeParam });
+  if (!resolved.ok) return NextResponse.json(resolved.body, { status: resolved.status });
+  const badge = resolved.badge;
+  const userId = resolved.session?.userId;
+  if (!badge || !userId) {
+    return NextResponse.json({ ok: false, error: "invalid_context" }, { status: 400 });
+  }
+  try {
+    await setRequestContext({ userId, sessionId: badge });
+    return NextResponse.json(buildStatusReport());
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: "internal_error", route: "vitals/status", message: String(e?.message ?? e) },
+      { status: 500 },
+    );
+  }
+}

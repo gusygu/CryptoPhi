@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveBadgeRequestContext } from "@/app/(server)/auth/session";
 import { withDbContext } from "@/core/db/pool_server";
 import { setRequestContext } from "@/lib/server/request-context";
-import { getAccountBalances } from "@/core/sources/binanceAccount";
 import { mapRuntimeSessionRow } from "@/core/features/cin-aux/runtimeQueries";
 
 async function unwrapParams(context: any): Promise<{ badge?: string; sessionId?: string }> {
@@ -23,7 +22,7 @@ export async function GET(
   req: NextRequest,
   ctx: { params: { sessionId: string } } | { params: Promise<{ sessionId: string }> },
 ) {
-  const { sessionId: sessionIdRaw, badge } = await unwrapParams(ctx);
+  const { badge, sessionId: sessionIdRaw } = await unwrapParams(ctx);
   const resolved = await resolveBadgeRequestContext(req, { badge });
   if (!resolved.ok) {
     return NextResponse.json(resolved.body, { status: resolved.status });
@@ -31,7 +30,7 @@ export async function GET(
 
   const sessionId = /^\d+$/.test(String(sessionIdRaw ?? "")) ? Number(sessionIdRaw) : NaN;
   if (!Number.isFinite(sessionId)) {
-    return NextResponse.json({ error: "invalid session id" }, { status: 400 });
+    return NextResponse.json({ session: null, assets: [] }, { status: 200 });
   }
 
   const badgeEffective = resolved.badge;
@@ -83,32 +82,12 @@ export async function GET(
             [sessionId],
           );
 
-          const universeRes = await client.query(
-            `
-              SELECT DISTINCT UPPER(asset) AS asset
-                FROM (
-                  SELECT base_asset AS asset
-                    FROM settings.coin_universe
-                   WHERE enabled = TRUE AND base_asset IS NOT NULL
-                  UNION ALL
-                  SELECT quote_asset AS asset
-                    FROM settings.coin_universe
-                   WHERE enabled = TRUE AND quote_asset IS NOT NULL
-                ) scoped
-               WHERE asset IS NOT NULL
-            `,
-          );
-          const universe = new Set<string>();
-          for (const row of universeRes.rows ?? []) {
-            if (row.asset) universe.add(String(row.asset));
-          }
-
           const totalMtm = (assetsRes.rows ?? []).reduce(
             (acc: number, row: any) => acc + toNumber(row.mtm_value_usdt),
             0,
           );
 
-          const assetsRaw = (assetsRes.rows ?? []).map((row: any) => {
+          const assets = (assetsRes.rows ?? []).map((row: any) => {
             const mtmValue = toNumber(row.mtm_value_usdt);
             return {
               sessionId: Number(row.session_id),
@@ -128,68 +107,6 @@ export async function GET(
               referenceUsdt: row.ref_usdt != null ? asString(row.ref_usdt) : null,
               accountUnits: row.account_units ?? null,
             };
-          });
-
-          const safeBalances = (await getAccountBalances().catch(() => ({}))) as Record<string, number>;
-          const liveEntries = Object.entries(safeBalances).map(
-            ([asset, units]) => [asset.toUpperCase(), Number(units) || 0] as const,
-          );
-          const liveMap = new Map(liveEntries.filter(([, units]) => units > 0));
-
-          const assetMap = new Map<string, (typeof assetsRaw)[number]>();
-
-          for (const asset of assetsRaw) {
-            const key = String(asset.assetId ?? "").toUpperCase();
-            if (!key) continue;
-            const existing = assetMap.get(key);
-            if (!existing) {
-              assetMap.set(key, { ...asset, assetId: key, accountUnits: asset.accountUnits ?? null });
-            } else if (existing.accountUnits == null && asset.accountUnits != null) {
-              assetMap.set(key, { ...existing, accountUnits: asset.accountUnits });
-            }
-            const liveUnits = liveMap.get(key);
-            if (liveUnits != null) {
-              assetMap.set(key, {
-                ...(assetMap.get(key) || { ...asset, assetId: key }),
-                accountUnits: liveUnits,
-              });
-              liveMap.delete(key);
-            }
-          }
-
-          for (const [assetId, units] of liveMap.entries()) {
-            if (!universe.has(assetId)) continue;
-            if (assetMap.has(assetId)) {
-              const current = assetMap.get(assetId)!;
-              assetMap.set(assetId, { ...current, accountUnits: units });
-              continue;
-            }
-            assetMap.set(assetId, {
-              sessionId,
-              assetId,
-              openingPrincipal: "0",
-              openingProfit: "0",
-              principalUsdt: "0",
-              profitUsdt: "0",
-              lastMarkTs: null,
-              priceUsdt: null,
-              bulkUsdt: "0",
-              mtmValueUsdt: "0",
-              weightInPortfolio: null,
-              realizedPnlUsdt: null,
-              inUniverse: true,
-              referenceUsdt: null,
-              accountUnits: units,
-            });
-          }
-
-          const assets = Array.from(assetMap.values());
-          assets.sort((a, b) => {
-            const mtmDiff = Number(b.mtmValueUsdt ?? 0) - Number(a.mtmValueUsdt ?? 0);
-            if (mtmDiff !== 0 && Number.isFinite(mtmDiff)) return mtmDiff;
-            const walletDiff = (b.accountUnits ?? 0) - (a.accountUnits ?? 0);
-            if (walletDiff !== 0) return walletDiff;
-            return a.assetId.localeCompare(b.assetId);
           });
 
           return { session, assets };

@@ -11,6 +11,7 @@ export type DynamicsRequest = {
   quote: string;
   coins: string[];
   candidates: string[];
+  badge?: string | null;
   histLen?: number;
   bins?: number;
 };
@@ -43,6 +44,13 @@ type DynamicsResponse = { ok: boolean; snapshot?: DynamicsSnapshot; error?: stri
 
 const ensureUpper = (s: string | undefined) => String(s ?? "").trim().toUpperCase();
 
+const inferBadgeFromPath = () => {
+  if (typeof window === "undefined") return null;
+  const seg = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+  if (!seg || seg === "api") return null;
+  return seg;
+};
+
 /* ----------------------------- Fetcher ----------------------------- */
 
 export async function fetchDynamicsSnapshot(params: DynamicsRequest, signal?: AbortSignal): Promise<DynamicsSnapshot> {
@@ -50,8 +58,9 @@ export async function fetchDynamicsSnapshot(params: DynamicsRequest, signal?: Ab
   const quote = ensureUpper(params.quote);
   const coins = params.coins.map(ensureUpper);
   const candidates = params.candidates.map(ensureUpper);
+  const badge = params.badge || inferBadgeFromPath() || "global";
 
-  const url = new URL("/api/dynamics", window.location.origin);
+  const url = new URL(`/api/${badge}/dynamics`, window.location.origin);
   url.searchParams.set("base", base);
   url.searchParams.set("quote", quote);
   if (coins.length) url.searchParams.set("coins", coins.join(","));
@@ -60,8 +69,29 @@ export async function fetchDynamicsSnapshot(params: DynamicsRequest, signal?: Ab
   if (params.bins != null) url.searchParams.set("bins", String(params.bins));
   url.searchParams.set("t", String(Date.now()));
 
-  const res = await fetch(url.toString(), { cache: "no-store", signal });
-  if (!res.ok) throw new Error(`/api/dynamics HTTP ${res.status}`);
+  const res = await fetch(url.toString(), {
+    cache: "no-store",
+    signal,
+    credentials: "include",
+    headers: { "x-app-session": badge },
+  });
+  if (!res.ok) {
+    const snippet = await res
+      .text()
+      .then((t) => t.slice(0, 200))
+      .catch(() => "");
+    throw new Error(`/api/${badge}/dynamics HTTP ${res.status}: ${snippet}`);
+  }
+
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.toLowerCase().includes("application/json")) {
+    const snippet = await res
+      .text()
+      .then((t) => t.slice(0, 200))
+      .catch(() => "");
+    throw new Error(`Expected JSON from /api/${badge}/dynamics (ct=${ct || "unknown"}): ${snippet}`);
+  }
+
   const payload = (await res.json()) as DynamicsResponse;
   if (!payload.ok || !payload.snapshot) throw new Error(payload.error ?? "dynamics snapshot error");
   return payload.snapshot;
@@ -81,6 +111,7 @@ export function useDynamicsSnapshot(params: DynamicsRequest) {
   const quote = useMemo(() => ensureUpper(params.quote), [params.quote]);
   const histKey = useMemo(() => String(params.histLen ?? ""), [params.histLen]);
   const binsKey = useMemo(() => String(params.bins ?? ""), [params.bins]);
+  const badgeKey = useMemo(() => params.badge ?? "", [params.badge]);
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
@@ -99,7 +130,15 @@ export function useDynamicsSnapshot(params: DynamicsRequest) {
     (async () => {
       try {
         const snap = await fetchDynamicsSnapshot(
-          { base, quote, coins: params.coins, candidates: params.candidates, histLen: params.histLen, bins: params.bins },
+          {
+            base,
+            quote,
+            coins: params.coins,
+            candidates: params.candidates,
+            badge: params.badge ?? undefined,
+            histLen: params.histLen,
+            bins: params.bins,
+          },
           ac.signal
         );
         setSnapshot(snap);
@@ -114,7 +153,7 @@ export function useDynamicsSnapshot(params: DynamicsRequest) {
     })();
 
     return () => ac.abort();
-  }, [base, quote, coinsKey, candsKey, histKey, binsKey, refreshToken]);
+  }, [base, quote, coinsKey, candsKey, histKey, binsKey, badgeKey, refreshToken]);
 
   return { snapshot, loading, error, refresh } as const;
 }

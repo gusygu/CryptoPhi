@@ -43,3 +43,21 @@ export function adoptSessionRequestContext(
 export function assumeAdminRequestContext() {
   setServerRequestContext({ userId: null, isAdmin: true, sessionId: null });
 }
+
+export async function setRequestContext(ctx: {
+  userId?: string | null;
+  isAdmin?: boolean;
+  sessionId?: string | null;
+  path?: string | null;
+  badgeParam?: string | null;
+  resolvedFromSessionMap?: boolean;
+}) {
+  setServerRequestContext({
+    userId: ctx.userId ?? null,
+    isAdmin: !!ctx.isAdmin,
+    sessionId: ctx.sessionId ?? null,
+    path: ctx.path ?? null,
+    badgeParam: ctx.badgeParam ?? null,
+    resolvedFromSessionMap: ctx.resolvedFromSessionMap ?? false,
+  });
+}

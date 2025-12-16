@@ -2,12 +2,13 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { DynamicsCard } from "@/components/features/dynamics/DynamicsCard";
-import { classNames, formatNumber, formatPercent } from "@/components/features/dynamics/utils";
+import { classNames, formatNumber, formatPercent, safeJsonFetch } from "@/components/features/dynamics/utils";
 import type { CinStat, DynamicsSnapshot } from "@/core/converters/provider.types";
 
 type AuxMetrics = DynamicsSnapshot["metrics"];
 
 export type AuxiliaryCardProps = {
+  badge: string;
   base: string;
   quote: string;
   metrics?: AuxMetrics | null;
@@ -49,6 +50,11 @@ type StrAuxState = {
   loading: boolean;
   error: string | null;
   metrics: StrAuxSnapshot | null;
+};
+type CinState = {
+  loading: boolean;
+  error: string | null;
+  cin: Record<string, CinStat> | null;
 };
 
 const toNumber = (value: unknown): number | null => {
@@ -154,6 +160,7 @@ function matrixValue(
 }
 
 export default function AuxiliaryCard({
+  badge,
   base,
   quote,
   metrics,
@@ -169,12 +176,9 @@ export default function AuxiliaryCard({
   const A = useMemo(() => String(base ?? "").toUpperCase(), [base]);
   const B = useMemo(() => String(quote ?? "").toUpperCase(), [quote]);
   const symbol = useMemo(() => (A && B ? `${A}${B}` : ""), [A, B]);
-  const previewAllowed = useMemo(
-    () => !previewSymbols?.size || previewSymbols.has(symbol),
-    [previewSymbols, symbol]
-  );
 
   const [strState, setStrState] = useState<StrAuxState>({ loading: false, error: null, metrics: null });
+  const [cinState, setCinState] = useState<CinState>({ loading: false, error: null, cin: null });
 
   const mooMetric = (metrics as any)?.moo ?? metrics?.mea ?? null;
   const strMetric = metrics?.str ?? null;
@@ -193,22 +197,25 @@ export default function AuxiliaryCard({
     };
   }, [strMetric]);
 
+  const effectiveCin = useMemo(
+    () => cinState.cin ?? cinStats ?? null,
+    [cinState.cin, cinStats]
+  );
+
   const candidateCount = Array.isArray(candidates)
     ? candidates.length
-    : Object.keys(metrics?.cin ?? {}).length;
+    : Object.keys(effectiveCin ?? {}).length;
   const universeCount = coins?.length ?? 0;
   const openingValue = useMemo(() => matrixValue(coins, benchmarkGrid, A, B), [coins, benchmarkGrid, A, B]);
-  const derivedCinRows = useMemo(() => deriveCinRows(cinStats, A, B), [cinStats, A, B]);
+  const derivedCinRows = useMemo(() => deriveCinRows(effectiveCin, A, B), [effectiveCin, A, B]);
+  const cinLoading = loading || cinState.loading;
 
   useEffect(() => {
     if (!symbol) {
       setStrState({ loading: false, error: null, metrics: null });
       return;
     }
-    if (!previewAllowed) {
-      setStrState({ loading: false, error: "Preview not available for this symbol", metrics: null });
-      return;
-    }
+    if (!badge) return;
     if (typeof window === "undefined") return;
 
     const controller = new AbortController();
@@ -221,19 +228,23 @@ export default function AuxiliaryCard({
 
     (async () => {
       try {
-        const statsUrl = new URL("/api/str-aux/stats", window.location.origin);
+        const badgePrefix = encodeURIComponent(badge || "global");
+        const statsUrl = new URL(`/api/${badgePrefix}/str-aux/stats`, window.location.origin);
         statsUrl.searchParams.set("symbols", symbol);
         statsUrl.searchParams.set("window", "30m");
         statsUrl.searchParams.set("bins", "128");
 
-        const response = await fetch(statsUrl.toString(), { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error(`/api/str-aux/stats ${response.status}`);
-        const payload = (await response.json()) as {
+        const payload = await safeJsonFetch<{
           ok: boolean;
           out?: Record<string, any>;
           error?: string;
-        };
-        if (!payload.ok) throw new Error(payload.error ?? "str-aux stats error");
+        }>(statsUrl.toString(), {
+          cache: "no-store",
+          signal: controller.signal,
+          credentials: "include",
+          headers: { "x-app-session": badge },
+        });
+        if (!payload?.ok) throw new Error(payload?.error ?? "str-aux stats error");
 
         const entry = payload.out?.[symbol];
         if (!entry || entry.ok === false) {
@@ -276,7 +287,58 @@ export default function AuxiliaryCard({
     })();
 
     return () => controller.abort();
-  }, [symbol, previewAllowed, snapshotStrMetrics]);
+  }, [symbol, badge, snapshotStrMetrics]);
+
+  useEffect(() => {
+    if (!badge || !symbol) {
+      setCinState((prev) => ({ ...prev, loading: false, error: null }));
+      return;
+    }
+    if (typeof window === "undefined") return;
+
+    const controller = new AbortController();
+    setCinState((prev) => ({ ...prev, loading: true, error: null }));
+
+    (async () => {
+      try {
+        const badgePrefix = encodeURIComponent(badge || "global");
+        const url = new URL(`/api/${badgePrefix}/cin-aux/snapshot`, window.location.origin);
+        const coinsParam = Array.from(new Set([A, B].filter(Boolean))).join(",");
+        if (coinsParam) url.searchParams.set("coins", coinsParam);
+
+        const res = await fetch(url.toString(), {
+          cache: "no-store",
+          signal: controller.signal,
+          headers: { "x-app-session": badge },
+        });
+        if (controller.signal.aborted) return;
+        if (!res.ok) {
+          const text = await res.text().catch(() => res.statusText);
+          setCinState((prev) => ({ ...prev, loading: false, error: text || `cin snapshot ${res.status}` }));
+          return;
+        }
+        const body = (await res.json()) as { ok: boolean; cin?: Record<string, CinStat>; error?: any };
+        if (body?.ok && body.cin) {
+          setCinState({ loading: false, error: null, cin: body.cin });
+        } else {
+          const msg =
+            typeof body?.error === "string"
+              ? body.error
+              : body?.error?.message ?? body?.error?.code ?? "cin snapshot unavailable";
+          setCinState((prev) => ({ ...prev, loading: false, error: msg }));
+        }
+      } catch (err: unknown) {
+        if (controller.signal.aborted) return;
+        setCinState((prev) => ({
+          ...prev,
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    })();
+
+    return () => controller.abort();
+  }, [badge, symbol, A, B]);
 
   const status =
     loading || strState.loading ? "Loading auxiliary data..." : `Snapshot - ${formatRelative(lastUpdated)}`;
@@ -430,11 +492,15 @@ export default function AuxiliaryCard({
             {`Snapshot ${formatRelative(lastUpdated)}`}
           </div>
         </div>
-        {loading ? (
+        {cinLoading ? (
           <div className="space-y-2 text-[11px] text-emerald-200/50">
             <div className="h-9 w-full animate-pulse rounded-lg bg-emerald-500/10" />
             <div className="h-9 w-full animate-pulse rounded-lg bg-emerald-500/10" />
             <div className="h-9 w-full animate-pulse rounded-lg bg-emerald-500/10" />
+          </div>
+        ) : cinState.error ? (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-[11px] text-amber-200">
+            {cinState.error}
           </div>
         ) : derivedCinRows.length ? (
           <div className="space-y-2">

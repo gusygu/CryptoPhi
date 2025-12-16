@@ -20,6 +20,7 @@ type VitalsState = {
   statusLevel: ReportLevel | null;
   statusCounts: { ok: number; warn: number; err: number; total: number } | null;
   statusTs?: number;
+  statusLabel?: string | null;
 };
 
 type SessionInfo = {
@@ -64,7 +65,6 @@ const DEV_LINKS: NavLink[] = [
 const API_ENDPOINTS = [
   { href: "/api/matrices/latest", label: "Matrices: latest" },
   { href: "/api/matrices", label: "Matrices: index" },
-  { href: "/api/preview/universe/symbols", label: "Preview universe symbols" },
   { href: "/api/str-aux/stats", label: "STR-aux stats" },
   { href: "/api/str-aux/bins", label: "STR-aux bins" },
   { href: "/api/str-aux/samples", label: "STR-aux samples" },
@@ -266,27 +266,7 @@ export default function HomeBar({ className = "" }: { className?: string }) {
     []
   );
 
-  // Load current session info from /api/auth/session
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      try {
-        const res = await fetch("/api/auth/session", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as SessionInfo;
-        if (!cancelled) setSession(data);
-      } catch {
-        // ignore, leave as null
-      }
-    }
-
-    loadSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Session info (legacy NextAuth probe removed)
 
   // Metronome timer driven by settings.cycleSeconds (default 80s)
   useEffect(() => {
@@ -346,31 +326,17 @@ export default function HomeBar({ className = "" }: { className?: string }) {
           ? await statusRes.json().catch(() => null)
           : null;
 
-      const healthOk = healthJson
-        ? Boolean(healthJson.ok ?? healthJson.db === "up")
-        : null;
-      const healthDb = healthJson
-        ? String(healthJson.db ?? healthJson.status ?? "").toLowerCase() || null
-        : null;
+      const healthDb = healthJson?.db ? (healthJson.db.ok ? "up" : "down") : null;
+      const healthOk =
+        healthJson?.ok === true && healthJson?.db?.ok === true ? true : healthJson?.ok === false ? false : null;
 
       let statusLevel: ReportLevel | null = null;
       let statusCounts: VitalsState["statusCounts"] = null;
-      if (statusJson && typeof statusJson === "object") {
-        const summary = statusJson.summary;
-        const level = typeof summary?.level === "string" ? summary.level : null;
-        if (level === "ok" || level === "warn" || level === "err") {
-          statusLevel = level;
-        }
-        const counts = summary?.counts;
-        if (counts && typeof counts === "object") {
-          statusCounts = {
-            ok: Number(counts.ok ?? 0),
-            warn: Number(counts.warn ?? 0),
-            err: Number(counts.err ?? 0),
-            total: Number(counts.total ?? 0),
-          };
-        }
-      }
+      const statusLabel = typeof statusJson?.label === "string" ? statusJson.label : null;
+      if (statusLabel === "UP") statusLevel = "ok";
+      else if (statusLabel === "DOWN") statusLevel = "err";
+      else if (statusLabel === "AUTH") statusLevel = "warn";
+      else statusLevel = null;
 
       setVitals({
         loading: false,
@@ -380,6 +346,7 @@ export default function HomeBar({ className = "" }: { className?: string }) {
         healthTs: healthJson?.ts ? Number(healthJson.ts) : Date.now(),
         statusLevel,
         statusCounts,
+        statusLabel,
         statusTs: statusJson?.ts ? Number(statusJson.ts) : Date.now(),
       });
     } catch (err) {
@@ -390,6 +357,7 @@ export default function HomeBar({ className = "" }: { className?: string }) {
         healthDb: null,
         statusLevel: null,
         statusCounts: null,
+        statusLabel: null,
       });
     }
   }, []);
@@ -673,11 +641,15 @@ export default function HomeBar({ className = "" }: { className?: string }) {
             >
               <span>Status</span>
               <span className="font-mono uppercase">
-                {vitals.statusLevel
+                {vitals.statusLabel
+                  ? vitals.statusLabel
+                  : vitals.statusLevel
                   ? levelToLabel(vitals.statusLevel)
                   : vitals.loading
                   ? "loading"
-                  : "-"}
+                  : vitals.error
+                  ? "error"
+                  : "unknown"}
               </span>
             </div>
           </div>

@@ -1,6 +1,7 @@
 // src/app/audit/page.tsx
 import { requireUserSession } from "@/app/(server)/auth/session";
 import UserAuditClient from "@/components/audit/UserAuditClient";
+import StrAuxAuditLink from "./StrAuxAuditLink";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -9,7 +10,7 @@ const TRACKS = [
   {
     key: "system",
     title: "System integrity",
-    subtitle: "Host, uptime, env, clocks, and vitals — are we running cleanly?",
+    subtitle: "Host, uptime, env, clocks, and vitals - are we running cleanly?",
     bullets: [
       "Backend/web availability and recent deploy stamp",
       "Host clocks and drift checks",
@@ -42,18 +43,25 @@ const TRACKS = [
 ] as const;
 
 export default async function AuditPage() {
-  const session = await requireUserSession();
+  await requireUserSession();
 
   return (
     <main className="px-4 py-8 text-sm text-zinc-100">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8">
         <header className="rounded-3xl border border-zinc-800 bg-zinc-950/60 p-6 shadow-2xl shadow-emerald-950/10">
-          <p className="text-[11px] uppercase tracking-[0.3em] text-emerald-300/80">Audit · User scope</p>
-          <h1 className="mt-2 text-3xl font-semibold text-zinc-50">Integrity & coherence</h1>
-          <p className="mt-3 text-sm leading-relaxed text-zinc-400">
-            Three lenses: system integrity, your data consistency, and dynamics/sampling coherence. Checks are tied to
-            your session and avoid exposing sensitive details.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.3em] text-emerald-300/80">Audit ú User scope</p>
+              <h1 className="mt-2 text-3xl font-semibold text-zinc-50">Integrity & coherence</h1>
+              <p className="mt-3 text-sm leading-relaxed text-zinc-400">
+                Three lenses: system integrity, your data consistency, and dynamics/sampling coherence. Checks are tied to
+                your session and avoid exposing sensitive details.
+              </p>
+            </div>
+            <div className="self-center">
+              <StrAuxAuditLink />
+            </div>
+          </div>
         </header>
 
         <section className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">

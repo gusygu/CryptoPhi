@@ -14,17 +14,21 @@ interface ScoredRow {
 }
 
 interface MooAlignmentPanelV2Props {
+  badge: string;
   sessionUuid: string | null;
   onChangeSessionUuid: (value: string | null) => void;
 }
 
 export const MooAlignmentPanelV2: React.FC<MooAlignmentPanelV2Props> = ({
+  badge,
   sessionUuid,
   onChangeSessionUuid,
 }) => {
   const [rows, setRows] = useState<ScoredRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+
+  const apiBase = useMemo(() => `/api/${encodeURIComponent(badge)}/cin-aux`, [badge]);
 
   // Fetch scored alignment when we have a valid UUID
   useEffect(() => {
@@ -42,8 +46,8 @@ export const MooAlignmentPanelV2: React.FC<MooAlignmentPanelV2Props> = ({
 
       try {
         const res = await fetch(
-          `/api/cin-aux/mea/${encodeURIComponent(sessionUuid)}/scored`,
-          { signal: controller.signal }
+          `${apiBase}/mea/${encodeURIComponent(sessionUuid)}/scored`,
+          { signal: controller.signal, credentials: "include" }
         );
 
         if (!res.ok) {
@@ -83,7 +87,7 @@ export const MooAlignmentPanelV2: React.FC<MooAlignmentPanelV2Props> = ({
     load();
 
     return () => controller.abort();
-  }, [sessionUuid]);
+  }, [sessionUuid, apiBase]);
 
   const globalScore = useMemo(() => {
     if (!rows.length) return null;

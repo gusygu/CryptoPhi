@@ -5,8 +5,7 @@ import AssetIdentity from "@/components/features/dynamics/v2/AssetIdentity";
 import ArbTable, { type ArbTableRow } from "@/components/features/dynamics/v2/ArbTable";
 import AuxiliaryCard from "@/components/features/dynamics/v2/AuxiliaryCard";
 import DynamicsMatrix from "@/components/features/dynamics/v2/DynamicsMatrix";
-import { formatNumber } from "@/components/features/dynamics/utils";
-import { loadPreviewSymbolSet } from "@/components/features/matrices/colouring";
+import { formatNumber, safeJsonFetch } from "@/components/features/dynamics/utils";
 import { type FrozenStage } from "@/components/features/matrices/colors";
 import { useCoinsUniverse } from "@/lib/dynamicsLegacyClient";
 import { fromDynamicsSnapshot, useDynamicsSnapshot } from "@/core/converters/Converter.client";
@@ -17,13 +16,13 @@ import type { MatricesLatestPayload } from "@/app/api/[badge]/matrices/latest/ro
 // só mudando o nome do componente pra DynamicsClient.
 
 const STORAGE_KEY = "dynamics:selectedPair";
+const DEBUG_DYNAMICS = process.env.NEXT_PUBLIC_DEBUG_DYNAMICS === "1";
 
 // ... (todas as helpers: Pair, Grid, readMatrixValue, deriveDefaultPair, etc.)
 
 // no final, em vez de `export default function DynamicsPage() { ... }`
 export default function DynamicsClient() {
-
-
+  const [badge, setBadge] = useState<string>("global");
 
 type Pair = { base: string; quote: string };
 type Grid = Array<Array<number | null>>;
@@ -260,13 +259,72 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 }
 
   const universe = useCoinsUniverse();
+  const [contextCoins, setContextCoins] = useState<string[]>([]);
+  const [contextSymbols, setContextSymbols] = useState<string[]>([]);
+  const [contextError, setContextError] = useState<string | null>(null);
 
-  const fallbackCoins = useMemo(
-    () => universe.map((coin: string) => ensureUpper(coin)).filter(Boolean),
-    [universe.join("|")]
-  );
+  const fallbackCoins = useMemo(() => {
+    const ctx = contextCoins.map((coin: string) => ensureUpper(coin)).filter(Boolean);
+    if (ctx.length) return ctx;
+    return universe.map((coin: string) => ensureUpper(coin)).filter(Boolean);
+  }, [contextCoins, universe.join("|")]);
 
   const fallbackCoinsKey = useMemo(() => fallbackCoins.join("|"), [fallbackCoins]);
+  const badgeHeaders = useMemo<Record<string, string>>(() => {
+    if (badge) return { "x-app-session": String(badge) };
+    return Object.create(null) as Record<string, string>;
+  }, [badge]);
+  const apiBase = useMemo(() => `/api/${encodeURIComponent(badge || "global")}`, [badge]);
+
+  /**
+   * Dynamics API contract (badge-scoped):
+   * - GET `${apiBase}/dynamics?base=BTC&quote=USDT&coins=...` => { ok, snapshot }
+   * - GET `${apiBase}/matrices/latest?coins=...` => MatricesLatestPayload { symbols, grid*, meta.universe }
+   * - GET `${apiBase}/moo-aux?coins=...` => { ok, grid } for MEA/aux metrics
+   * - GET `${apiBase}/str-aux/stats?window&bins&symbols` => { ok, out } used by Auxiliary card
+   * All endpoints return JSON (never HTML) and require the badge in the path plus `x-app-session` headers.
+   */
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!badge) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const ctxUrl = new URL(`${apiBase}/debug/context`, window.location.origin);
+        const payload = await safeJsonFetch<any>(ctxUrl.toString(), {
+          cache: "no-store",
+          signal: controller.signal,
+          credentials: "include",
+          headers: { ...badgeHeaders },
+        });
+        const coinsRaw =
+          (Array.isArray(payload?.snapshot?.coins) && payload.snapshot.coins) ||
+          (Array.isArray(payload?.snapshot?.coin_universe) && payload.snapshot.coin_universe) ||
+          (Array.isArray(payload?.coins) && payload.coins) ||
+          (Array.isArray(payload?.coin_universe) && payload.coin_universe) ||
+          (Array.isArray(payload?.coinUniverse) && payload.coinUniverse) ||
+          [];
+        const symbolsRaw =
+          (Array.isArray(payload?.snapshot?.symbols) && payload.snapshot.symbols) ||
+          (Array.isArray(payload?.snapshot?.coin_symbols) && payload.snapshot.coin_symbols) ||
+          (Array.isArray(payload?.symbols) && payload.symbols) ||
+          (Array.isArray(payload?.coin_symbols) && payload.coin_symbols) ||
+          [];
+        const normalized = coinsRaw.map(ensureUpper).filter(Boolean);
+        setContextCoins(normalized);
+        setContextSymbols(symbolsRaw.map(ensureUpper).filter(Boolean));
+        setContextError(null);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        if (DEBUG_DYNAMICS) console.warn("[dynamics] context fetch failed", err);
+        setContextCoins([]);
+        setContextSymbols([]);
+        setContextError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => controller.abort();
+  }, [badge, badgeHeaders]);
 
   const [availability, setAvailability] = useState<{
     coins: string[];
@@ -281,10 +339,30 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     loading: true,
     error: null,
   }));
+  const [marketMatrix, setMarketMatrix] = useState<{
+    loading: boolean;
+    error: string | null;
+    coins: string[];
+    benchmark?: Grid;
+    pct24h?: Grid;
+    mea?: Grid;
+    ref?: Grid;
+    idPct?: Grid;
+    timestamp?: number | null;
+    symbols: string[];
+  }>({
+    loading: false,
+    error: null,
+    coins: [],
+    symbols: [],
+  });
+  const marketCoinsKey = useMemo(() => marketMatrix.coins.join("|"), [marketMatrix.coins]);
+  const marketSymbolsKey = useMemo(() => marketMatrix.symbols.join("|"), [marketMatrix.symbols]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!badge) return;
     let alive = true;
-    const controller = new AbortController();
 
     setAvailability((prev) => ({
       ...prev,
@@ -293,83 +371,81 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
       error: null,
     }));
 
-    (async () => {
-      try {
-        const res = await fetch(`/api/preview/universe/symbols?t=${Date.now()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`/api/preview/universe/symbols ${res.status}`);
-        const payload = await res.json();
+    try {
+      const quote = "USDT";
+      const coinSource = marketMatrix.coins.length ? marketMatrix.coins : fallbackCoins;
+      const symbolSource =
+        marketMatrix.symbols.length > 0
+          ? marketMatrix.symbols
+          : contextSymbols.length
+            ? contextSymbols
+            : coinSource.map((c) => `${ensureUpper(c)}${quote}`);
 
-        const coinsRaw = Array.isArray(payload?.coins) ? payload.coins : [];
-        const symbolsRaw = Array.isArray(payload?.symbols) ? payload.symbols : [];
-        const quote = ensureUpper(payload?.quote ?? "USDT");
+      const allowedSet = new Set(coinSource.map(ensureUpper));
+      if (quote) allowedSet.add(quote);
 
-        const normalizedSymbols = dedupeUpper(symbolsRaw);
+      const normalizedSymbols = dedupeUpper(symbolSource);
 
-        const allowedSet = new Set(fallbackCoins.map(ensureUpper));
-        if (quote) allowedSet.add(quote);
+      const normalizedPairs = normalizedSymbols
+        .map((symbol) => {
+          const sym = ensureUpper(symbol);
+          if (!sym) return null;
+          if (quote && sym.endsWith(quote) && sym.length > quote.length) {
+            const base = sym.slice(0, sym.length - quote.length);
+            if (!base || base === quote) return null;
+            return { symbol: sym, base, quote };
+          }
+          const match = sym.match(/^(?<base>[A-Z0-9]{2,10})(?<quote>USDT|FDUSD|USDC|TUSD|BUSD|BTC|ETH|BNB)$/);
+          const base = match?.groups?.base ? ensureUpper(match.groups.base) : null;
+          const q = match?.groups?.quote ? ensureUpper(match.groups.quote) : quote;
+          if (!base || !q || base === q) return null;
+          return { symbol: sym, base, quote: q };
+        })
+        .filter((entry): entry is { symbol: string; base: string; quote: string } => Boolean(entry));
 
-        const normalizedPairs = normalizedSymbols
-          .map((symbol) => {
-            const sym = ensureUpper(symbol);
-            if (!sym) return null;
-            if (quote && sym.endsWith(quote) && sym.length > quote.length) {
-              const base = sym.slice(0, sym.length - quote.length);
-              if (!base || base === quote) return null;
-              return { symbol: sym, base, quote };
-            }
-            const match = sym.match(/^(?<base>[A-Z0-9]{2,10})(?<quote>USDT|FDUSD|USDC|TUSD|BUSD|BTC|ETH|BNB)$/);
-            const base = match?.groups?.base ? ensureUpper(match.groups.base) : null;
-            const q = match?.groups?.quote ? ensureUpper(match.groups.quote) : quote;
-            if (!base || !q || base === q) return null;
-            return { symbol: sym, base, quote: q };
-          })
-          .filter((entry): entry is { symbol: string; base: string; quote: string } => Boolean(entry));
+      const filteredPairs = normalizedPairs.filter(
+        (entry) => allowedSet.has(entry.base) && allowedSet.has(entry.quote),
+      );
 
-        const filteredPairs = normalizedPairs.filter(
-          (entry) => allowedSet.has(entry.base) && allowedSet.has(entry.quote)
-        );
+      const normalizedCoins = dedupeUpper(coinSource);
 
-        const coinSeeds = coinsRaw.length ? coinsRaw : fallbackCoins;
-        const normalizedCoins = dedupeUpper([
-          ...coinSeeds,
-          quote,
-        ]).filter((c) => allowedSet.has(c));
-
-        if (!alive) return;
-        setAvailability({
-          coins: normalizedCoins.length ? normalizedCoins : (fallbackCoins.length ? fallbackCoins : ["BTC", "USDT"]),
-          symbols: normalizedSymbols.filter((sym) => {
-            const s = ensureUpper(sym);
-            const pair = filteredPairs.find((p) => p.symbol === s);
-            return pair ? allowedSet.has(pair.base) && allowedSet.has(pair.quote) : allowedSet.has(s);
-          }),
-          pairs: filteredPairs,
-          loading: false,
-          error: null,
-        });
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        if (!alive) return;
-        setAvailability({
-          coins: fallbackCoins.length ? fallbackCoins : ["BTC", "USDT"],
-          symbols: [],
-          pairs: [],
-          loading: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    })();
+      if (!alive) return;
+      setAvailability({
+        coins: normalizedCoins.length ? normalizedCoins : fallbackCoins.length ? fallbackCoins : ["BTC", "USDT"],
+        symbols: normalizedSymbols.filter((sym) => {
+          const s = ensureUpper(sym);
+          const pair = filteredPairs.find((p) => p.symbol === s);
+          return pair ? allowedSet.has(pair.base) && allowedSet.has(pair.quote) : allowedSet.has(s);
+        }),
+        pairs: filteredPairs,
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      if (!alive) return;
+      setAvailability({
+        coins: fallbackCoins.length ? fallbackCoins : ["BTC", "USDT"],
+        symbols: [],
+        pairs: [],
+        loading: false,
+        error: err instanceof Error ? err.message : String(err ?? contextError ?? ""),
+      });
+    }
 
     return () => {
       alive = false;
-      controller.abort();
     };
-  }, [fallbackCoinsKey]);
+  }, [fallbackCoinsKey, badge, contextError, contextSymbols, marketCoinsKey, marketSymbolsKey]);
 
-  const coins = availability.coins.length ? availability.coins : ["BTC", "USDT"];
+  const coins = useMemo(
+    () =>
+      marketMatrix.coins.length
+        ? marketMatrix.coins
+        : availability.coins.length
+          ? availability.coins
+          : ["BTC", "USDT"],
+    [marketCoinsKey, availability.coins.join("|")],
+  );
 
   const fallbackPair = useMemo(() => deriveDefaultPair(coins), [coins]);
 
@@ -383,8 +459,16 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
       const upper = ensureUpper(sym);
       if (upper) set.add(upper);
     }
+    if (set.size === 0) {
+      for (const base of coins) {
+        for (const quote of coins) {
+          if (base === quote) continue;
+          set.add(`${ensureUpper(base)}${ensureUpper(quote)}`);
+        }
+      }
+    }
     return set;
-  }, [availability.symbols, availability.pairs]);
+  }, [availability.symbols, availability.pairs, coins.join("|")]);
 
   const allowedCoinSet = useMemo(() => {
     const set = new Set<string>();
@@ -395,34 +479,15 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     return set;
   }, [coins]);
   const [previewSymbolSet, setPreviewSymbolSet] = useState<Set<string>>(new Set());
+  const [previewMeta, setPreviewMeta] = useState<Map<
+    string,
+    { available?: boolean; bridged?: boolean; antisym?: boolean; reason?: string | null }
+  >>(new Map());
   const [selected, setSelected] = useState<Pair>(() => fallbackPair);
 
   useEffect(() => {
     setSelected((prev) => normalizePair(prev, coins, fallbackPair));
   }, [coins.join("|"), fallbackPair.base, fallbackPair.quote]);
-
-  useEffect(() => {
-    let active = true;
-    if (!coins.length) {
-      setPreviewSymbolSet(new Set());
-      return () => {
-        active = false;
-      };
-    }
-    (async () => {
-      try {
-        const { set } = await loadPreviewSymbolSet(coins);
-        if (!active) return;
-        setPreviewSymbolSet(new Set(set));
-      } catch {
-        if (!active) return;
-        setPreviewSymbolSet(new Set());
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [coins.join("|")]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !coins.length) return;
@@ -451,6 +516,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     quote: selected.quote,
     coins,
     candidates: coins.filter((coin) => coin !== selected.base && coin !== selected.quote),
+    badge,
   });
 
   const candidateCoins = useMemo(() => {
@@ -476,30 +542,22 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
   );
 
   type MatrixValues = Record<string, Record<string, number | string | null | undefined>>;
-
-  const [badge, setBadge] = useState<string>("global");
-  const [marketMatrix, setMarketMatrix] = useState<{
-    loading: boolean;
-    error: string | null;
+  type PreviewSymbolsResponse = {
+    ok: boolean;
     coins: string[];
-    benchmark?: Grid;
-    pct24h?: Grid;
-    mea?: Grid;
-    ref?: Grid;
-    idPct?: Grid;
-    timestamp?: number | null;
     symbols: string[];
-  }>({
-    loading: false,
-    error: null,
-    coins: [],
-    symbols: [],
-  });
+    previewBySymbol?: Record<
+      string,
+      { available?: boolean; bridged?: boolean; antisym?: boolean; reason?: string | null }
+    >;
+    error?: any;
+  };
+
   const freezeMapRef = useRef<Map<string, number>>(new Map());
   const prevIdPctRef = useRef<Grid | null>(null);
   const [freezeVersion, setFreezeVersion] = useState(0);
 
-  const marketCoinsKey = useMemo(() => requestCoins.join("|"), [requestCoins]);
+  const requestCoinsKey = useMemo(() => requestCoins.join("|"), [requestCoins]);
   const coinsKey = useMemo(() => coins.join("|"), [coins]);
   const marketQuoteKey = useMemo(() => selected.quote, [selected.quote]);
   const marketTimestampKey = useMemo(() => snapshot?.builtAt ?? 0, [snapshot?.builtAt]);
@@ -530,31 +588,57 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
         const mooUrl = new URL(`/api/${badgePrefix}/moo-aux`, window.location.origin);
         if (params) mooUrl.searchParams.set("coins", params);
 
-        const [matricesRes, mooRes] = await Promise.all([
-          fetch(matrixUrl.toString(), {
+        const previewUrl = new URL(`/api/${badgePrefix}/preview/universe/symbols`, window.location.origin);
+        if (params) previewUrl.searchParams.set("coins", params);
+
+        const [matricesJson, mooJson, previewJson] = await Promise.all([
+          safeJsonFetch<MatricesLatestPayload>(matrixUrl.toString(), {
             cache: "no-store",
             signal: controller.signal,
             headers: { "x-app-session": badge },
           }),
-          fetch(mooUrl.toString(), {
+          safeJsonFetch<{ ok: boolean; grid?: MatrixValues; error?: string }>(mooUrl.toString(), {
             cache: "no-store",
             signal: controller.signal,
             headers: { "x-app-session": badge },
           }),
+          (async () => {
+            try {
+              return await safeJsonFetch<PreviewSymbolsResponse>(previewUrl.toString(), {
+                cache: "no-store",
+                signal: controller.signal,
+                headers: { "x-app-session": badge },
+              });
+            } catch (err) {
+              if (!controller.signal.aborted && DEBUG_DYNAMICS) {
+                console.warn("[dynamics] preview fetch failed", err);
+              }
+              return null;
+            }
+          })(),
         ]);
 
-        if (!matricesRes.ok) throw new Error(`/api/matrices/latest ${matricesRes.status}`);
-        if (!mooRes.ok) throw new Error(`/api/moo-aux ${mooRes.status}`);
+        if (!matricesJson?.ok) throw new Error(matricesJson?.error ?? "matrices latest error");
+        if (!mooJson?.ok) throw new Error(mooJson?.error ?? "moo-aux error");
 
-        const matricesJson = (await matricesRes.json()) as MatricesLatestPayload;
-        if (!matricesJson.ok) throw new Error(matricesJson.error ?? "matrices latest error");
-
-        const mooJson = (await mooRes.json()) as {
-          ok: boolean;
-          grid?: MatrixValues;
-          error?: string;
-        };
-        if (!mooJson.ok) throw new Error(mooJson.error ?? "moo-aux error");
+        const previewAvailableSymbols = previewJson?.previewBySymbol
+          ? Object.entries(previewJson.previewBySymbol)
+              .filter(([, meta]) => meta?.available)
+              .map(([sym]) => ensureUpper(sym))
+          : matricesJson.meta?.universe ?? [];
+        setPreviewSymbolSet(new Set(previewAvailableSymbols));
+        if (previewJson?.previewBySymbol) {
+          const next = new Map<
+            string,
+            { available?: boolean; bridged?: boolean; antisym?: boolean; reason?: string | null }
+          >();
+          for (const [sym, meta] of Object.entries(previewJson.previewBySymbol)) {
+            next.set(ensureUpper(sym), meta);
+          }
+          setPreviewMeta(next);
+        } else {
+          setPreviewMeta(new Map());
+        }
 
         const universeRaw = Array.isArray(matricesJson.meta?.universe)
           ? (matricesJson.meta!.universe as string[])
@@ -601,7 +685,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     })();
 
     return () => controller.abort();
-  }, [marketCoinsKey, marketQuoteKey, marketTimestampKey, coinsKey]);
+  }, [marketCoinsKey, marketQuoteKey, marketTimestampKey, coinsKey, badge, requestCoinsKey, selected.quote]);
 
   const matrixCoins = marketMatrix.coins.length ? marketMatrix.coins : requestCoins;
   const matrixCoinsKey = useMemo(() => matrixCoins.join("|"), [matrixCoins]);
@@ -717,6 +801,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
 
   const handleSelectMatrixCell = useCallback(
     ({ base, quote }: { base: string; quote: string; metric?: string }) => {
+      if (DEBUG_DYNAMICS) console.debug("[dynamics] select matrix cell", base, quote);
       setSelected((prev) => {
         const next = normalizePair({ base, quote }, coins, fallbackPair);
         if (next.base === prev.base && next.quote === prev.quote) return prev;
@@ -799,7 +884,10 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
             coins={matrixCoins}
             idPct={matrixIdPct}
             mea={matrixMea}
+            refGrid={matrixRef}
+            pctTraded={matrixPct24h}
             previewSet={previewSymbolSet}
+            previewInfo={previewMeta}
             allowedSymbols={allowedSymbolSet}
             payloadSymbols={matrixPayloadSymbols}
             freezeStageFor={freezeStageFor}
@@ -817,6 +905,7 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
               </div>
             ) : null}
             <AuxiliaryCard
+              badge={badge}
               base={selected.base}
               quote={selected.quote}
               metrics={snapshot?.metrics ?? null}
@@ -859,6 +948,3 @@ function mapArbRows(snapshot: DynamicsSnapshot | null, allowedCoins?: Set<string
     </div>
   );
 }
-
-
-

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useParams } from "next/navigation";
 import Histogram from "@/components/features/str-aux/Histogram";
 
 type Props = {
@@ -44,8 +45,21 @@ export default function StrAuxClient({
   symbols = [],
   win = '30m',
   bins = 256,
-  base = '/api/str-aux',
+  base: baseOverride,
 }: Props) {
+  const params = useParams<{ badge?: string | string[] }>();
+  const badge = useMemo(() => {
+    const raw = params?.badge;
+    if (!raw) return null;
+    const value = Array.isArray(raw) ? String(raw[0] ?? "") : String(raw);
+    const trimmed = value.trim();
+    return trimmed || null;
+  }, [params]);
+  const base = useMemo(() => {
+    if (baseOverride) return baseOverride;
+    if (badge) return `/api/${badge}/str-aux`;
+    return "/api/str-aux";
+  }, [baseOverride, badge]);
   const readSessionId = () => {
     if (typeof document === "undefined") return null;
     const raw = document.cookie || "";

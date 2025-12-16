@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CinRuntimeSessionSummary,
   CinRuntimeAssetPnl,
@@ -10,6 +10,7 @@ import type {
 import { MooAlignmentPanelV2 } from "./MooAlignementPanelV2";
 
 interface CinAuxClientProps {
+  badge: string;
   initialSessionId?: number | null;
   initialMooSessionUuid?: string | null;
 }
@@ -95,9 +96,11 @@ async function ensureOk(res: Response, label: string) {
 }
 
 const CinAuxClient: React.FC<CinAuxClientProps> = ({
+  badge,
   initialSessionId = null,
   initialMooSessionUuid = null,
 }) => {
+  const apiBase = useMemo(() => `/api/${encodeURIComponent(badge)}/cin-aux`, [badge]);
   const [sessions, setSessions] = useState<CinRuntimeSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(
     initialSessionId
@@ -131,24 +134,19 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
     setLoadingSessions(true);
     setSessionError(null);
     try {
-      const res = await fetch("/api/cin-aux/runtime/sessions");
+      const res = await fetch(`${apiBase}/runtime/sessions`, { credentials: "include" });
 
       if (!res.ok) {
-        console.error("cin sessions HTTP error", res.status);
-        setSessions([]);
-        setSessionError(`HTTP ${res.status}`);
+        console.warn("cin-aux not ready", res.status);
         return;
       }
 
       const data = await safeJson(res);
-      if (!Array.isArray(data)) {
-        console.warn("cin sessions unexpected payload", data);
-        setSessions([]);
-        setSessionError("Unexpected response format");
-        return;
-      }
-
-      const list = data as CinRuntimeSessionSummary[];
+      const list = Array.isArray(data?.sessions)
+        ? (data.sessions as CinRuntimeSessionSummary[])
+        : Array.isArray(data)
+          ? (data as CinRuntimeSessionSummary[])
+          : [];
       setSessions(list);
 
       if (list.length > 0 && selectedSessionId == null) {
@@ -161,7 +159,7 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
     } finally {
       setLoadingSessions(false);
     }
-  }, [selectedSessionId]);
+  }, [selectedSessionId, apiBase]);
 
   useEffect(() => {
     fetchSessions();
@@ -188,15 +186,16 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
       try {
         const [assetsRes, movesRes, tauRes] = await Promise.all([
           fetch(
-            `/api/cin-aux/runtime/sessions/${selectedSessionId}/balances`,
-            { signal: controller.signal }
+            `${apiBase}/runtime/sessions/${selectedSessionId}/balances`,
+            { signal: controller.signal, credentials: "include" }
           ),
-          fetch(`/api/cin-aux/runtime/sessions/${selectedSessionId}/moves`, {
+          fetch(`${apiBase}/runtime/sessions/${selectedSessionId}/moves`, {
             signal: controller.signal,
+            credentials: "include",
           }),
           fetch(
-            `/api/cin-aux/runtime/sessions/${selectedSessionId}/tau/assets`,
-            { signal: controller.signal },
+            `${apiBase}/runtime/sessions/${selectedSessionId}/tau/assets`,
+            { signal: controller.signal, credentials: "include" },
           ),
         ]);
 
@@ -270,7 +269,7 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
     loadDetails();
 
     return () => controller.abort();
-  }, [selectedSessionId, refreshToken]);
+  }, [selectedSessionId, refreshToken, apiBase]);
 
   // ---- open new session ----
 
@@ -280,8 +279,11 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
 
       // 1) tenta o endpoint novo: POST /api/cin-aux/runtime/sessions
       try {
-        const res = await fetch("/api/cin-aux/runtime/sessions", {
+        const res = await fetch(`${apiBase}/runtime/sessions`, {
           method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
         });
 
         if (!res.ok) {
@@ -301,9 +303,12 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
       // 2) fallback: tenta o endpoint legado /api/cin-aux/session/open
       if (newId == null) {
         try {
-          const res2 = await fetch("/api/cin-aux/session/open", {
-            method: "POST",
-          });
+        const res2 = await fetch(`${apiBase}/session/open`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
 
           if (!res2.ok) {
             console.warn("session/open POST not ok:", res2.status);
@@ -372,6 +377,7 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
 
         <section className="w-full xl:w-2/3 flex flex-col gap-4">
           <RuntimeSessionDetail
+            badge={badge}
             session={selectedSession}
             assets={assets}
             moves={moves}
@@ -384,6 +390,7 @@ const CinAuxClient: React.FC<CinAuxClientProps> = ({
           />
 
           <MooAlignmentPanelV2
+            badge={badge}
             sessionUuid={mooSessionUuid}
             onChangeSessionUuid={setMooSessionUuid}
           />
@@ -502,6 +509,7 @@ const StatusBadge: React.FC<{ status: CinRuntimeSessionSummary["status"] }> = ({
 };
 
 interface RuntimeSessionDetailProps {
+  badge: string;
   session: CinRuntimeSessionSummary | null;
   assets: CinRuntimeAssetPnl[];
   moves: CinRuntimeMoveRow[];
@@ -523,6 +531,7 @@ const RuntimeSessionDetail: React.FC<RuntimeSessionDetailProps> = ({
   onRefreshSession,
   actionMessage,
   onActionMessage,
+  badge,
 }) => {
   if (!session) {
     return (
@@ -581,6 +590,7 @@ const RuntimeSessionDetail: React.FC<RuntimeSessionDetailProps> = ({
             <StatusBadge status={session.status} />
             <CinButtons
               sessionId={session.sessionId}
+              badge={badge}
               onAfterAction={onRefreshSession}
               onMessage={onActionMessage}
             />
@@ -1012,13 +1022,16 @@ function getMoveLuggage(move: CinRuntimeMoveRow): number {
 
 export function CinButtons({
   sessionId,
+  badge,
   onAfterAction,
   onMessage,
 }: {
   sessionId: number;
+  badge: string;
   onAfterAction?: () => void;
   onMessage?: (message: string | null) => void;
 }) {
+  const apiBase = useMemo(() => `/api/${encodeURIComponent(badge)}/cin-aux`, [badge]);
   const [autoSync, setAutoSync] = useState(false);
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NEXT_PUBLIC_CIN_RATE_LIMIT_COOLDOWN_MS ?? 60_000);
@@ -1082,11 +1095,12 @@ export function CinButtons({
 
   const requestTradeSync = async () => {
     const res = await fetch(
-      `/api/cin-aux/runtime/sessions/${sessionId}/trades/sync`,
+      `${apiBase}/runtime/sessions/${sessionId}/trades/sync`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),
+        credentials: "include",
       },
     );
     if (res.status === 404) {
@@ -1098,24 +1112,24 @@ export function CinButtons({
 
   const requestWalletIngest = async () => {
     const ingestRes = await fetch(
-      `/api/cin-aux/runtime/sessions/${sessionId}/wallet/ingest`,
-      { method: "POST" },
+      `${apiBase}/runtime/sessions/${sessionId}/wallet/ingest`,
+      { method: "POST", credentials: "include" },
     );
     return ensureOk(ingestRes, "Wallet ingest");
   };
 
   const requestWalletRefresh = async () => {
     const refreshRes = await fetch(
-      `/api/cin-aux/runtime/sessions/${sessionId}/wallet/refresh`,
-      { method: "POST" },
+      `${apiBase}/runtime/sessions/${sessionId}/wallet/refresh`,
+      { method: "POST", credentials: "include" },
     );
     return ensureOk(refreshRes, "Wallet refresh");
   };
 
   const requestPriceRefresh = async () => {
     const res = await fetch(
-      `/api/cin-aux/runtime/sessions/${sessionId}/prices/refresh`,
-      { method: "POST" },
+      `${apiBase}/runtime/sessions/${sessionId}/prices/refresh`,
+      { method: "POST", credentials: "include" },
     );
     if (res.status === 404) {
       onMessage?.("Price refresh endpoint not available yet.");
@@ -1242,8 +1256,8 @@ export function CinButtons({
             if (!confirm("Close this session?")) return;
             run(async () => {
               const res = await fetch(
-                `/api/cin-aux/runtime/sessions/${sessionId}/close`,
-                { method: "POST" }
+                `${apiBase}/runtime/sessions/${sessionId}/close`,
+                { method: "POST", credentials: "include" }
               );
               if (res.status === 404) {
                 onMessage?.("Close session endpoint not available yet.");

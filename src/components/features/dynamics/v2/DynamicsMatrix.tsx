@@ -13,10 +13,19 @@ export type DynamicsMatrixProps = {
   idPct?: Grid;
   /** moo_aux (mea) grid (base x quote) */
   mea?: Grid;
+  /** reference grid (ref) */
+  refGrid?: Grid;
+  /** pct_traded (using pct24h or traded %) grid */
+  pctTraded?: Grid;
   /** Symbols that come from API payload (used to mark bridged/anti-symmetric) */
   payloadSymbols?: string[];
   /** Preview symbols available live; drives the green rings */
   previewSet?: Set<string>;
+  /** Preview metadata (availability/bridged/antisym) per symbol */
+  previewInfo?: Map<
+    string,
+    { available?: boolean; bridged?: boolean; antisym?: boolean; reason?: string | null }
+  >;
   /** Allowed symbols (if provided) to gate clicks */
   allowedSymbols?: Set<string>;
   /** Optional frozen stage resolver (based on previous cycles) */
@@ -73,8 +82,11 @@ export default function DynamicsMatrix({
   coins,
   idPct,
   mea,
+  refGrid,
+  pctTraded,
   payloadSymbols,
   previewSet,
+  previewInfo,
   allowedSymbols,
   freezeStageFor,
   selected,
@@ -86,6 +98,7 @@ export default function DynamicsMatrix({
   const rows = useMemo(() => uniqueUpper(coins ?? []), [coins]);
   const cols = rows;
   const preview = useMemo(() => previewSet ?? new Set<string>(), [previewSet]);
+  const previewMeta = useMemo(() => previewInfo ?? new Map(), [previewInfo]);
   const payload = useMemo(() => {
     if (!payloadSymbols?.length) return new Set<string>();
     return new Set(payloadSymbols.map(ensureUpper));
@@ -105,6 +118,10 @@ export default function DynamicsMatrix({
   const ringFor = (base: string, quote: string): string => {
     const sym = `${base}${quote}`;
     const inverse = `${quote}${base}`;
+    const meta = previewMeta.get(sym) ?? previewMeta.get(inverse);
+    if (meta?.available) return "#22c55e";
+    if (meta?.antisym) return "#f97316";
+    if (meta?.bridged) return "#cbd5e1";
     if (preview.has(sym)) return "#22c55e";
     if (preview.has(inverse)) return "#f97316";
     if (payload.has(sym) || payload.has(inverse)) return "#94a3b8";
@@ -124,6 +141,21 @@ export default function DynamicsMatrix({
     prevMooRef.current = next;
   }, [mea, gridKey, rows, cols]);
 
+  const lineColorForMoo = (value: number | null): string => {
+    if (value == null || !Number.isFinite(value)) return "rgba(148,163,184,0.35)";
+    return value >= 0 ? "rgba(56,189,248,0.85)" : "rgba(249,115,22,0.85)";
+  };
+
+  const lineColorForRef = (value: number | null): string => {
+    if (value == null || !Number.isFinite(value)) return "rgba(148,163,184,0.35)";
+    return value >= 0 ? "rgba(94,234,212,0.7)" : "rgba(244,114,182,0.7)";
+  };
+
+  const lineColorForPct = (value: number | null): string => {
+    if (value == null || !Number.isFinite(value)) return "rgba(148,163,184,0.35)";
+    return value >= 0 ? "rgba(74,222,128,0.8)" : "rgba(248,113,113,0.8)";
+  };
+
   const renderCell = (i: number, j: number) => {
     const base = rows[i]!;
     const quote = cols[j]!;
@@ -140,6 +172,8 @@ export default function DynamicsMatrix({
     const stage = freezeStageFor?.(base, quote) ?? null;
     const idVal = valueFromGrid(idPct, i, j);
     const mooVal = valueFromGrid(mea, i, j);
+    const refVal = valueFromGrid(refGrid, i, j);
+    const pctVal = valueFromGrid(pctTraded, i, j);
     const prevMoo = prevMooRef.current.get(`${base}|${quote}`) ?? null;
 
     const ringColor = ringFor(base, quote);
@@ -150,7 +184,8 @@ export default function DynamicsMatrix({
       { frozenStage: stage ?? undefined, zeroFloor: MOO_ZERO_FLOOR }
     );
     const mooBg = mooBase ? withAlpha(mooBase, 0.9) : NULL_BG;
-
+    const refColor = lineColorForRef(refVal);
+    const pctColor = lineColorForPct(pctVal);
     const pairAllowed =
       allowedSymbols == null ||
       allowedSymbols.has(`${base}${quote}`) ||
@@ -190,6 +225,16 @@ export default function DynamicsMatrix({
           <div
             className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
             style={{
+              background: mooBg,
+              borderColor: withAlpha(ringColor, 0.18),
+              color: mooVal == null || !Number.isFinite(mooVal) ? NULL_TEXT : "#02131f",
+            }}
+          >
+            {textForValue(mooVal)}
+          </div>
+          <div
+            className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
+            style={{
               background: withAlpha(idColor, 0.9),
               borderColor: withAlpha(ringColor, 0.2),
               color: "#e2e8f0",
@@ -200,12 +245,22 @@ export default function DynamicsMatrix({
           <div
             className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
             style={{
-              background: mooBg,
-              borderColor: withAlpha(ringColor, 0.18),
-              color: mooVal == null || !Number.isFinite(mooVal) ? NULL_TEXT : "#02131f",
+              background: withAlpha(refColor, 0.18),
+              borderColor: withAlpha(refColor, 0.35),
+              color: "#e2e8f0",
             }}
           >
-            {textForValue(mooVal)}
+            {textForValue(refVal)}
+          </div>
+          <div
+            className="w-full rounded-md border px-1.5 py-[2px] font-mono text-[10px] tabular-nums leading-tight"
+            style={{
+              background: withAlpha(pctColor, 0.18),
+              borderColor: withAlpha(pctColor, 0.35),
+              color: "#e2e8f0",
+            }}
+          >
+            {textForValue(pctVal)}
           </div>
         </button>
       </td>

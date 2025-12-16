@@ -116,23 +116,32 @@ export async function GET(
         resolvedFromSessionMap: (resolved.session as any)?.resolvedFromSessionMap ?? false,
       },
       async (client) => {
-        const allowedCoins = new Set(
-          (await getEffectiveSettings({ userId: resolved.session.userId, badge, client })).coinUniverse.map((c) =>
-            c.toUpperCase(),
-          ),
-        );
-        const symbols = (baseSelection.symbols ?? []).filter((sym) => {
+        const effectiveCoins = (await getEffectiveSettings({ userId: resolved.session.userId, badge, client })).coinUniverse;
+        const allowedCoins = new Set(effectiveCoins.map((c) => c.toUpperCase()));
+        const filtered = (baseSelection.symbols ?? []).filter((sym) => {
           const upper = String(sym ?? '').toUpperCase();
           if (upper.length < 6) return false;
           const base = upper.slice(0, upper.length - 4);
           const quote = upper.slice(-4);
           return allowedCoins.has(base) && allowedCoins.has(quote);
         });
-        return { allowedCoins, symbols };
+        const derived =
+          filtered.length || !(allowedCoins.has("USDT") && allowedCoins.size > 1)
+            ? filtered
+            : Array.from(allowedCoins)
+                .filter((c) => c !== "USDT")
+                .map((base) => `${base}USDT`);
+        return { allowedCoins, symbols: derived };
       },
     );
 
     const symbols = payload.symbols;
+    if (!symbols.length) {
+      return NextResponse.json(
+        { ok: false, error: "empty_coin_universe", symbols: [], coinsUsed: [], effectiveCoins: Array.from(payload.allowedCoins) },
+        { status: 400 },
+      );
+    }
 
     const baseStatsOptions: StatsOptions = {
       idhr: { alpha: 2.5, sMin: 1e-6, smooth: 3, topK: 8 },

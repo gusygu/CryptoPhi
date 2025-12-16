@@ -40,6 +40,26 @@ export function formatPercent(value: unknown, options: FormatNumberOptions = {})
   return formatted === options.fallback ? formatted : `${formatted}%`;
 }
 
+export async function safeJsonFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const snippet = await res
+      .text()
+      .then((t) => t.slice(0, 200))
+      .catch(() => "");
+    throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}: ${snippet}`);
+  }
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.toLowerCase().includes("application/json")) {
+    const snippet = await res
+      .text()
+      .then((t) => t.slice(0, 200))
+      .catch(() => "");
+    throw new Error(`Expected JSON for ${url} (ct=${ct || "unknown"}): ${snippet}`);
+  }
+  return (await res.json()) as T;
+}
+
 export function uniqueUpper(tokens: Iterable<string>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

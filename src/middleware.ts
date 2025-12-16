@@ -1,40 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { resolveBadgeScope } from "@/lib/server/badge-scope";
 
-// Engine/global routes (shared across users).
-const ENGINE_ROOTS = new Set([
-  "audit",
-  "auth",
-  "converter",
-  "invite",
-  "market",
-  "ops",
-  "pipeline",
-  "poller",
-  "preview",
-  "system",
-  "vitals",
-]);
-
-// User/badge-scoped routes (all others).
-const USER_ROOTS = new Set([
-  "admin",
-  "cin-aux",
-  "dynamics",
-  "dynamics_legacy",
-  "matrices",
-  "mea-aux",
-  "mgmt",
-  "moo-aux",
-  "profile",
-  "settings",
-  "snapshot",
-  "str-aux",
-  "trade",
-  "system",
-  "user-invite",
-]);
-
 const PAGE_GLOBAL_ROOTS = new Set(["auth", "docs", "info"]);
 const PAGE_FEATURE_ROOTS = new Set([
   "dashboard",
@@ -54,79 +20,40 @@ const PAGE_FEATURE_ROOTS = new Set([
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // API traffic should pass through without rewrites to avoid double-prefix bugs.
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
   const segments = pathname.split("/").filter(Boolean);
   const scope = resolveBadgeScope(req, { badge: segments[0] ?? null });
 
   // ---- Non-API: redirect to badge-scoped path (except auth/docs/info/static)
-  if (!pathname.startsWith("/api/")) {
-    const first = segments[0] ?? "";
-    const isStatic =
-      first.startsWith("_next") ||
-      first === "favicon.ico" ||
-      first === "robots.txt" ||
-      first === "sitemap.xml" ||
-      first === "assets";
+  const first = segments[0] ?? "";
+  const isStatic =
+    first.startsWith("_next") ||
+    first === "favicon.ico" ||
+    first === "robots.txt" ||
+    first === "sitemap.xml" ||
+    first === "assets";
 
-    if (!isStatic && !PAGE_GLOBAL_ROOTS.has(first)) {
-      const badge = scope.effectiveBadge || scope.badgeCookie || "global";
+  if (!isStatic && !PAGE_GLOBAL_ROOTS.has(first)) {
+    const badge = scope.effectiveBadge || scope.badgeCookie || "global";
 
-      // Already badge-scoped? If first segment matches badge, let it pass.
-      if (first !== badge) {
-        const url = req.nextUrl.clone();
-        if (segments.length === 0) {
-          url.pathname = `/${badge}`;
-        } else if (PAGE_FEATURE_ROOTS.has(first)) {
-          url.pathname = `/${badge}/${segments.join("/")}`;
-        } else {
-          // If path is unrecognized, leave it as-is (avoid over-eager redirects).
-          return NextResponse.next();
-        }
-        return NextResponse.redirect(url);
+    // Already badge-scoped? If first segment matches badge, let it pass.
+    if (first !== badge) {
+      const url = req.nextUrl.clone();
+      if (segments.length === 0) {
+        url.pathname = `/${badge}`;
+      } else if (PAGE_FEATURE_ROOTS.has(first)) {
+        url.pathname = `/${badge}/${segments.join("/")}`;
+      } else {
+        // If path is unrecognized, leave it as-is (avoid over-eager redirects).
+        return NextResponse.next();
       }
+      return NextResponse.redirect(url);
     }
-    return NextResponse.next();
-  }
-
-  // ---- API handling (existing logic)
-  // segments = ["api", "engine"|"user", ...rest]
-  const [, first, ...rest] = segments;
-
-  if (!first || rest.length === 0) return NextResponse.next();
-
-  // /api/engine/<root>/... => global/system scope
-  if (first === "engine" && rest.length) {
-    const [root] = rest;
-    if (!ENGINE_ROOTS.has(root)) return NextResponse.next();
-    const headers = new Headers(req.headers);
-    headers.set("x-app-session", "global");
-    return NextResponse.next({ request: { headers } });
-  }
-
-  // Legacy global: /api/<engine-root>/... => rewrite to /api/engine/<root>/...
-  if (ENGINE_ROOTS.has(first)) {
-    const url = req.nextUrl.clone();
-    url.pathname = ["/api", "engine", first, ...rest].join("/");
-    const headers = new Headers(req.headers);
-    headers.set("x-app-session", "global");
-    return NextResponse.rewrite(url, { request: { headers } });
-  }
-
-  // /api/{user}/<user-root>/... => user-scoped; carry user badge as app session id
-  if (USER_ROOTS.has(rest[0] ?? "")) {
-    const userBadge = (scope.effectiveBadge || first || scope.badgeCookie || "global").trim();
-    const headers = new Headers(req.headers);
-    headers.set("x-app-session", userBadge);
-    return NextResponse.next({ request: { headers } });
-  }
-
-  // Legacy user: /api/<user-root>/... => rewrite to /api/{badge}/<user-root>/...
-  if (USER_ROOTS.has(first)) {
-    const userBadge = (scope.effectiveBadge || scope.badgeCookie || "global").trim();
-    const url = req.nextUrl.clone();
-    url.pathname = ["/api", userBadge, first, ...rest].join("/");
-    const headers = new Headers(req.headers);
-    headers.set("x-app-session", userBadge);
-    return NextResponse.rewrite(url, { request: { headers } });
   }
 
   return NextResponse.next();

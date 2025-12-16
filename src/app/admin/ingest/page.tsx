@@ -17,12 +17,13 @@ async function fetchJson(path: string) {
 export default async function AdminIngestPage() {
   const session = await requireUserSession();
   if (!session.isAdmin) return null;
+  const badge = (session as any)?.sessionId ?? (session as any)?.badge ?? null;
 
   const [strAuxStats, matricesLatest, mooAux, cinSessions] = await Promise.all([
     fetchJson("/api/str-aux/stats"),
     fetchJson("/api/matrices/latest"),
     fetchJson("/api/moo-aux"),
-    fetchJson("/api/cin-aux/runtime/sessions"),
+    badge ? fetchJson(`/api/${badge}/cin-aux/runtime/sessions`) : null,
   ]);
 
   const matricesTs = (matricesLatest as any)?.ts ?? (matricesLatest as any)?.timestamp;
